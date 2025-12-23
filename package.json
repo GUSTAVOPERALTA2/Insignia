@@ -1,0 +1,12 @@
+{
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "moment-timezone": "^0.6.0",
+    "openai": "^6.15.0",
+    "qrcode-terminal": "^0.12.0",
+    "uuid": "^13.0.0",
+    "whatsapp-web.js": "^1.34.2"
+  }
+}

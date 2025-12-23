@@ -1,0 +1,294 @@
+[
+  {
+    "id": "T1_team_in_progress_open",
+    "description": "Equipo avisa que ya está trabajando en un ticket OPEN",
+    "input": {
+      "text": "Ya estamos trabajando en eso, voy en camino.",
+      "roleHint": "team",
+      "ticket": {
+        "id": "INC-1",
+        "folio": "MANT-00001",
+        "descripcion": "Aire acondicionado no enfría",
+        "lugar": "Villa 5",
+        "status": "open"
+      }
+    },
+    "expected": {
+      "next_status": "in_progress"
+    }
+  },
+  {
+    "id": "T2_team_in_progress_pending",
+    "description": "Equipo toma un ticket pendiente",
+    "input": {
+      "text": "Tomamos el ticket, lo revisamos ahora.",
+      "roleHint": "team",
+      "ticket": {
+        "id": "INC-2",
+        "folio": "MANT-00002",
+        "descripcion": "Fuga en lavabo del baño",
+        "lugar": "Villa 7",
+        "status": "pending"
+      }
+    },
+    "expected": {
+      "next_status": "in_progress"
+    }
+  },
+  {
+    "id": "T3_team_done_claim_in_progress",
+    "description": "Equipo dice que ya quedó un ticket en progreso",
+    "input": {
+      "text": "Ya quedó arreglada la fuga, pueden validar por favor.",
+      "roleHint": "team",
+      "ticket": {
+        "id": "INC-3",
+        "folio": "MANT-00003",
+        "descripcion": "Fuga en regadera",
+        "lugar": "Villa 9",
+        "status": "in_progress"
+      }
+    },
+    "expected": {
+      "next_status": "awaiting_confirmation"
+    }
+  },
+  {
+    "id": "T4_team_done_claim_open",
+    "description": "Equipo dice que ya quedó un ticket que estaba OPEN",
+    "input": {
+      "text": "Listo, quedó funcionando el clima.",
+      "roleHint": "team",
+      "ticket": {
+        "id": "INC-4",
+        "folio": "MANT-00004",
+        "descripcion": "Clima no enciende",
+        "lugar": "Villa 10",
+        "status": "open"
+      }
+    },
+    "expected": {
+      "next_status": "awaiting_confirmation"
+    }
+  },
+  {
+    "id": "T5_team_cancel_open",
+    "description": "Equipo pide cancelar porque huésped ya no requiere",
+    "input": {
+      "text": "Favor de cancelar, el huésped ya no requiere el servicio.",
+      "roleHint": "team",
+      "ticket": {
+        "id": "INC-5",
+          "folio": "MANT-00005",
+        "descripcion": "Cambio de foco",
+        "lugar": "Villa 3",
+        "status": "open"
+      }
+    },
+    "expected": {
+      "next_status": "canceled"
+    }
+  },
+  {
+    "id": "T6_team_cancel_in_progress",
+    "description": "Equipo pide cancelar un ticket en progreso (duplicado)",
+    "input": {
+      "text": "Ticket duplicado, cancélenlo.",
+      "roleHint": "team",
+      "ticket": {
+        "id": "INC-6",
+        "folio": "MANT-00006",
+        "descripcion": "Reporte duplicado de fuga",
+        "lugar": "Villa 3",
+        "status": "in_progress"
+      }
+    },
+    "expected": {
+      "next_status": "canceled"
+    }
+  },
+  {
+    "id": "T7_team_noise_not_relevant",
+    "description": "Ruido en el grupo, no debería cambiar estado",
+    "input": {
+      "text": "Buenos días equipo 🙌",
+      "roleHint": "team",
+      "ticket": {
+        "id": "INC-7",
+        "folio": "MANT-00007",
+        "descripcion": "Filtro de alberca haciendo ruido",
+        "lugar": "Alberca principal",
+        "status": "open"
+      }
+    },
+    "expected": {
+      "next_status": "open",
+      "is_relevant": false
+    }
+  },
+  {
+    "id": "R1_requester_happy_awaiting_confirmation",
+    "description": "Solicitante agradece y se ve contento; ticket en awaiting_confirmation",
+    "input": {
+      "text": "Muchas gracias, quedó perfecto.",
+      "roleHint": "requester",
+      "ticket": {
+        "id": "INC-8",
+        "folio": "MANT-00008",
+        "descripcion": "Clima no enfriaba en recámara",
+        "lugar": "Villa 12",
+        "status": "awaiting_confirmation"
+      }
+    },
+    "expected": {
+      "next_status": "awaiting_confirmation",
+      "requester_side": "happy"
+    }
+  },
+  {
+    "id": "R2_requester_happy_in_progress",
+    "description": "Solicitante agradece mientras el ticket sigue en progreso",
+    "input": {
+      "text": "Todo bien, muchas gracias por el apoyo.",
+      "roleHint": "requester",
+      "ticket": {
+        "id": "INC-9",
+        "folio": "MANT-00009",
+        "descripcion": "TV sin señal",
+        "lugar": "Villa 14",
+        "status": "in_progress"
+      }
+    },
+    "expected": {
+      "next_status": "in_progress"
+    }
+  },
+  {
+    "id": "R3_requester_still_broken_resolved",
+    "description": "Solicitante dice que sigue sin servir después de resolved",
+    "input": {
+      "text": "Sigue sin servir el aire, no enfría nada.",
+      "roleHint": "requester",
+      "ticket": {
+        "id": "INC-10",
+        "folio": "MANT-00010",
+        "descripcion": "Aire acondicionado fallando",
+        "lugar": "Villa 16",
+        "status": "resolved"
+      }
+    },
+    "expected": {
+      "next_status": "open",
+      "requester_side": "still_broken"
+    }
+  },
+  {
+    "id": "R4_requester_still_broken_awaiting_confirmation",
+    "description": "Solicitante dice que regresó la falla en awaiting_confirmation",
+    "input": {
+      "text": "Volvió la fuga de agua en el mismo baño.",
+      "roleHint": "requester",
+      "ticket": {
+        "id": "INC-11",
+        "folio": "MANT-00011",
+        "descripcion": "Fuga en lavabo arreglada",
+        "lugar": "Villa 18",
+        "status": "awaiting_confirmation"
+      }
+    },
+    "expected": {
+      "next_status": "open",
+      "requester_side": "still_broken"
+    }
+  },
+  {
+    "id": "R5_requester_cancel_open",
+    "description": "Solicitante pide cancelar un ticket open",
+    "input": {
+      "text": "Ya no se preocupen, ya no lo necesito, pueden cancelar.",
+      "roleHint": "requester",
+      "ticket": {
+        "id": "INC-12",
+        "folio": "MANT-00012",
+        "descripcion": "Pedido de almohadas extra",
+        "lugar": "Villa 20",
+        "status": "open"
+      }
+    },
+    "expected": {
+      "next_status": "canceled"
+    }
+  },
+  {
+    "id": "R6_requester_cancel_in_progress",
+    "description": "Solicitante pide cancelar un ticket en progreso",
+    "input": {
+      "text": "Encontré otra solución, cancelen el ticket por favor.",
+      "roleHint": "requester",
+      "ticket": {
+        "id": "INC-13",
+        "folio": "MANT-00013",
+        "descripcion": "Laptop no prende",
+        "lugar": "Oficina de sistemas",
+        "status": "in_progress"
+      }
+    },
+    "expected": {
+      "next_status": "canceled"
+    }
+  },
+  {
+    "id": "R7_requester_neutral_clarification",
+    "description": "Solicitante manda aclaración neutra, sin intención de estado",
+    "input": {
+      "text": "Solo quiero aclarar que la falla es en la recámara principal, no en la sala.",
+      "roleHint": "requester",
+      "ticket": {
+        "id": "INC-14",
+        "folio": "MANT-00014",
+        "descripcion": "No prende la luz",
+        "lugar": "Villa 22",
+        "status": "open"
+      }
+    },
+    "expected": {
+      "next_status": "open"
+    }
+  },
+  {
+    "id": "R8_requester_noise_chitchat",
+    "description": "Solicitante manda smalltalk; no debería cambiar estado",
+    "input": {
+      "text": "Buen día, cómo están?",
+      "roleHint": "requester",
+      "ticket": {
+        "id": "INC-15",
+        "folio": "MANT-00015",
+        "descripcion": "Falla de internet",
+        "lugar": "Lobby",
+        "status": "open"
+      }
+    },
+    "expected": {
+      "next_status": "open"
+    }
+  },
+  {
+    "id": "R10_requester_reopen_closed",
+    "description": "Solicitante pide reabrir un ticket cerrado",
+    "input": {
+      "text": "Podrían reabrir el ticket? Volvió la misma falla en el jacuzzi.",
+      "roleHint": "requester",
+      "ticket": {
+        "id": "INC-16",
+        "folio": "MANT-00016",
+        "descripcion": "Jacuzzi no calienta",
+        "lugar": "Villa 24",
+        "status": "closed"
+      }
+    },
+    "expected": {
+      "next_status": "open"
+    }
+  }
+]

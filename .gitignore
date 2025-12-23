@@ -1,0 +1,26 @@
+# Node
+node_modules/
+
+
+# WhatsApp sessions
+.wwebjs_auth/
+.wwebjs_auth_probe/
+.wwebjs_cache/
+.wwebjs_cache_probe/
+
+proyecto/.wwebjs_auth/
+proyecto/.wwebjs_auth_probe/
+proyecto/.wwebjs_cache/
+proyecto/.wwebjs_cache_probe/
+
+# Logs
+
+logs/
+*.log
+
+# DB
+*.sqlite
+*.db
+
+.env
+.env.*

@@ -1,0 +1,387 @@
+[
+  { "id":"tower_principal", "label":"Torre Principal", "type":"estructura", "tower":"Principal", "aliases":["principal","torre principal"] },
+  { "id":"tower_principal_A", "label":"Torre Principal – Lado A", "type":"estructura", "tower":"Principal", "parent":"tower_principal", "aliases":["lado a","principal a"] },
+  { "id":"tower_principal_B", "label":"Torre Principal – Lado B", "type":"estructura", "tower":"Principal", "parent":"tower_principal", "aliases":["lado b","principal b"] },
+
+  { "id":"hab_pri_a_1101","label":"Habitación 1101","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"11","room_number":"1101","aliases":["hab 1101","rm 1101","habitacion 1101"] },
+  { "id":"hab_pri_a_1102","label":"Habitación 1102","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"11","room_number":"1102","aliases":["hab 1102","rm 1102","habitacion 1102"] },
+  { "id":"hab_pri_a_1103","label":"Habitación 1103","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"11","room_number":"1103","aliases":["hab 1103","rm 1103","habitacion 1103"] },
+  { "id":"hab_pri_a_1104","label":"Habitación 1104","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"11","room_number":"1104","aliases":["hab 1104","rm 1104","habitacion 1104"] },
+
+  { "id":"hab_pri_a_1201","label":"Habitación 1201","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"12","room_number":"1201","aliases":["hab 1201","rm 1201","habitacion 1201"] },
+  { "id":"hab_pri_a_1202","label":"Habitación 1202","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"12","room_number":"1202","aliases":["hab 1202","rm 1202","habitacion 1202"] },
+  { "id":"hab_pri_a_1203","label":"Habitación 1203","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"12","room_number":"1203","aliases":["hab 1203","rm 1203","habitacion 1203"] },
+  { "id":"hab_pri_a_1204","label":"Habitación 1204","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"12","room_number":"1204","aliases":["hab 1204","rm 1204","habitacion 1204"] },
+
+  { "id":"hab_pri_a_1301","label":"Habitación 1301","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"13","room_number":"1301","aliases":["hab 1301","rm 1301","habitacion 1301"] },
+  { "id":"hab_pri_a_1302","label":"Habitación 1302","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"13","room_number":"1302","aliases":["hab 1302","rm 1302","habitacion 1302"] },
+  { "id":"hab_pri_a_1303","label":"Habitación 1303","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"13","room_number":"1303","aliases":["hab 1303","rm 1303","habitacion 1303"] },
+  { "id":"hab_pri_a_1304","label":"Habitación 1304","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"13","room_number":"1304","aliases":["hab 1304","rm 1304","habitacion 1304"] },
+  { "id":"hab_pri_a_1305","label":"Habitación 1305","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"13","room_number":"1305","aliases":["hab 1305","rm 1305","habitacion 1305"] },
+  { "id":"hab_pri_a_1306","label":"Habitación 1306","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"13","room_number":"1306","aliases":["hab 1306","rm 1306","habitacion 1306"] },
+  { "id":"hab_pri_a_1307","label":"Habitación 1307","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"13","room_number":"1307","aliases":["hab 1307","rm 1307","habitacion 1307"] },
+
+  { "id":"hab_pri_a_1401","label":"Habitación 1401","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"14","room_number":"1401","aliases":["hab 1401","rm 1401","habitacion 1401"] },
+  { "id":"hab_pri_a_1402","label":"Habitación 1402","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"14","room_number":"1402","aliases":["hab 1402","rm 1402","habitacion 1402"] },
+  { "id":"hab_pri_a_1403","label":"Habitación 1403","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"14","room_number":"1403","aliases":["hab 1403","rm 1403","habitacion 1403"] },
+  { "id":"hab_pri_a_1404","label":"Habitación 1404","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"14","room_number":"1404","aliases":["hab 1404","rm 1404","habitacion 1404"] },
+  { "id":"hab_pri_a_1405","label":"Habitación 1405","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"14","room_number":"1405","aliases":["hab 1405","rm 1405","habitacion 1405"] },
+  { "id":"hab_pri_a_1406","label":"Habitación 1406","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"14","room_number":"1406","aliases":["hab 1406","rm 1406","habitacion 1406"] },
+  { "id":"hab_pri_a_1407","label":"Habitación 1407","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"14","room_number":"1407","aliases":["hab 1407","rm 1407","habitacion 1407"] },
+
+  { "id":"hab_pri_a_1501","label":"Habitación 1501","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"15","room_number":"1501","aliases":["hab 1501","rm 1501","habitacion 1501"] },
+  { "id":"hab_pri_a_1502","label":"Habitación 1502","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"15","room_number":"1502","aliases":["hab 1502","rm 1502","habitacion 1502"] },
+  { "id":"hab_pri_a_1503","label":"Habitación 1503","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"15","room_number":"1503","aliases":["hab 1503","rm 1503","habitacion 1503"] },
+  { "id":"hab_pri_a_1504","label":"Habitación 1504","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"15","room_number":"1504","aliases":["hab 1504","rm 1504","habitacion 1504"] },
+  { "id":"hab_pri_a_1505","label":"Habitación 1505","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"15","room_number":"1505","aliases":["hab 1505","rm 1505","habitacion 1505"] },
+  { "id":"hab_pri_a_1506","label":"Habitación 1506","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"15","room_number":"1506","aliases":["hab 1506","rm 1506","habitacion 1506"] },
+  { "id":"hab_pri_a_1507","label":"Habitación 1507","type":"habitacion","tower":"Principal","parent":"tower_principal_A","floor":"15","room_number":"1507","aliases":["hab 1507","rm 1507","habitacion 1507"] },
+
+  { "id":"hab_pri_b_1105","label":"Habitación 1105","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"11","room_number":"1105","aliases":["hab 1105","rm 1105","habitacion 1105"] },
+  { "id":"hab_pri_b_1106","label":"Habitación 1106","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"11","room_number":"1106","aliases":["hab 1106","rm 1106","habitacion 1106"] },
+  { "id":"hab_pri_b_1107","label":"Habitación 1107","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"11","room_number":"1107","aliases":["hab 1107","rm 1107","habitacion 1107"] },
+  { "id":"hab_pri_b_1108","label":"Habitación 1108","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"11","room_number":"1108","aliases":["hab 1108","rm 1108","habitacion 1108"] },
+  { "id":"hab_pri_b_1109","label":"Habitación 1109","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"11","room_number":"1109","aliases":["hab 1109","rm 1109","habitacion 1109"] },
+  { "id":"hab_pri_b_1110","label":"Habitación 1110","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"11","room_number":"1110","aliases":["hab 1110","rm 1110","habitacion 1110"] },
+  { "id":"hab_pri_b_1111","label":"Habitación 1111","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"11","room_number":"1111","aliases":["hab 1111","rm 1111","habitacion 1111"] },
+  { "id":"hab_pri_b_1112","label":"Habitación 1112","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"11","room_number":"1112","aliases":["hab 1112","rm 1112","habitacion 1112"] },
+
+  { "id":"hab_pri_b_1207","label":"Habitación 1207","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"12","room_number":"1207","aliases":["hab 1207","rm 1207","habitacion 1207"] },
+  { "id":"hab_pri_b_1208","label":"Habitación 1208","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"12","room_number":"1208","aliases":["hab 1208","rm 1208","habitacion 1208"] },
+  { "id":"hab_pri_b_1209","label":"Habitación 1209","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"12","room_number":"1209","aliases":["hab 1209","rm 1209","habitacion 1209"] },
+  { "id":"hab_pri_b_1210","label":"Habitación 1210","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"12","room_number":"1210","aliases":["hab 1210","rm 1210","habitacion 1210"] },
+
+  { "id":"hab_pri_b_1308","label":"Habitación 1308","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"13","room_number":"1308","aliases":["hab 1308","rm 1308","habitacion 1308"] },
+  { "id":"hab_pri_b_1309","label":"Habitación 1309","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"13","room_number":"1309","aliases":["hab 1309","rm 1309","habitacion 1309"] },
+  { "id":"hab_pri_b_1310","label":"Habitación 1310","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"13","room_number":"1310","aliases":["hab 1310","rm 1310","habitacion 1310"] },
+  { "id":"hab_pri_b_1311","label":"Habitación 1311","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"13","room_number":"1311","aliases":["hab 1311","rm 1311","habitacion 1311"] },
+  { "id":"hab_pri_b_1312","label":"Habitación 1312","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"13","room_number":"1312","aliases":["hab 1312","rm 1312","habitacion 1312"] },
+  { "id":"hab_pri_b_1313","label":"Habitación 1313","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"13","room_number":"1313","aliases":["hab 1313","rm 1313","habitacion 1313"] },
+  { "id":"hab_pri_b_1314","label":"Habitación 1314","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"13","room_number":"1314","aliases":["hab 1314","rm 1314","habitacion 1314"] },
+  { "id":"hab_pri_b_1315","label":"Habitación 1315","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"13","room_number":"1315","aliases":["hab 1315","rm 1315","habitacion 1315"] },
+
+  { "id":"hab_pri_b_1408","label":"Habitación 1408","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"14","room_number":"1408","aliases":["hab 1408","rm 1408","habitacion 1408"] },
+  { "id":"hab_pri_b_1409","label":"Habitación 1409","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"14","room_number":"1409","aliases":["hab 1409","rm 1409","habitacion 1409"] },
+  { "id":"hab_pri_b_1410","label":"Habitación 1410","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"14","room_number":"1410","aliases":["hab 1410","rm 1410","habitacion 1410"] },
+  { "id":"hab_pri_b_1411","label":"Habitación 1411","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"14","room_number":"1411","aliases":["hab 1411","rm 1411","habitacion 1411"] },
+  { "id":"hab_pri_b_1412","label":"Habitación 1412","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"14","room_number":"1412","aliases":["hab 1412","rm 1412","habitacion 1412"] },
+  { "id":"hab_pri_b_1413","label":"Habitación 1413","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"14","room_number":"1413","aliases":["hab 1413","rm 1413","habitacion 1413"] },
+  { "id":"hab_pri_b_1414","label":"Habitación 1414","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"14","room_number":"1414","aliases":["hab 1414","rm 1414","habitacion 1414"] },
+  { "id":"hab_pri_b_1415","label":"Habitación 1415","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"14","room_number":"1415","aliases":["hab 1415","rm 1415","habitacion 1415"] },
+
+  { "id":"hab_pri_b_1508","label":"Habitación 1508","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"15","room_number":"1508","aliases":["hab 1508","rm 1508","habitacion 1508"] },
+  { "id":"hab_pri_b_1509","label":"Habitación 1509","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"15","room_number":"1509","aliases":["hab 1509","rm 1509","habitacion 1509"] },
+  { "id":"hab_pri_b_1510","label":"Habitación 1510","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"15","room_number":"1510","aliases":["hab 1510","rm 1510","habitacion 1510"] },
+  { "id":"hab_pri_b_1511","label":"Habitación 1511","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"15","room_number":"1511","aliases":["hab 1511","rm 1511","habitacion 1511"] },
+  { "id":"hab_pri_b_1512","label":"Habitación 1512","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"15","room_number":"1512","aliases":["hab 1512","rm 1512","habitacion 1512"] },
+  { "id":"hab_pri_b_1513","label":"Habitación 1513","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"15","room_number":"1513","aliases":["hab 1513","rm 1513","habitacion 1513"] },
+  { "id":"hab_pri_b_1514","label":"Habitación 1514","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"15","room_number":"1514","aliases":["hab 1514","rm 1514","habitacion 1514"] },
+  { "id":"hab_pri_b_1515","label":"Habitación 1515","type":"habitacion","tower":"Principal","parent":"tower_principal_B","floor":"15","room_number":"1515","aliases":["hab 1515","rm 1515","habitacion 1515"] },
+
+  { "id":"ofc_compras","label":"Compras","type":"oficina","tower":"Principal" },
+  { "id":"ofc_almacen","label":"Almacén","type":"oficina","tower":"Principal","aliases":["almacen"] },
+  { "id":"ofc_ird_rs","label":"IRD / Room Service","type":"oficina","tower":"Principal","aliases":["ird","room service","rs"] },
+  { "id":"ofc_seguridad","label":"Seguridad","type":"oficina","tower":"Principal" },
+  { "id":"ofc_caseta_seguridad","label":"Caseta de seguridad","type":"oficina","tower":"Principal","aliases":["caseta"] },
+  { "id":"ofc_ayb","label":"AyB / Alimentos y Bebidas","type":"oficina","tower":"Principal","aliases":["ayb","alimentos y bebidas"] },
+  { "id":"ofc_ayb_sous","label":"AyB Sous Chef","type":"oficina","tower":"Principal","aliases":["sous chef"] },
+  { "id":"ofc_team_cocina","label":"Team Cocina","type":"oficina","tower":"Principal" },
+  { "id":"ofc_chef_ejecutivo","label":"Chef Ejecutivo","type":"oficina","tower":"Principal" },
+  { "id":"ofc_sistemas","label":"Sistemas","type":"oficina","tower":"Principal","aliases":["it"] },
+  { "id":"ofc_residencias","label":"Residencias","type":"oficina","tower":"Principal" },
+  { "id":"ofc_concierge","label":"Concierge","type":"oficina","tower":"Principal" },
+  { "id":"ofc_gerente_front","label":"Gerente Front","type":"oficina","tower":"Principal" },
+  { "id":"ofc_mayordomos","label":"Mayordomos","type":"oficina","tower":"Principal","aliases":["butlers","butler"] },
+  { "id":"ofc_viceroy_connect","label":"Viceroy Connect","type":"oficina","tower":"Principal" },
+  { "id":"ofc_ventas","label":"Ventas","type":"oficina","tower":"Principal" },
+  { "id":"ofc_caja_casero","label":"Caja Casero","type":"oficina","tower":"Principal" },
+  { "id":"ofc_caja_cielomar","label":"Caja Cielomar","type":"oficina","tower":"Principal" },
+
+  { "id":"cc_casero","label":"Casero","type":"centro_consumo","tower":"Principal" },
+  { "id":"cc_otro_bar","label":"Otro Bar","type":"centro_consumo","tower":"Principal","aliases":["bar","otro bar"] },
+  { "id":"cc_cielomar","label":"Cielomar","type":"centro_consumo","tower":"Principal" },
+
+  { "id":"sal_santiago","label":"Santiago","type":"salon","tower":"Principal" },
+  { "id":"sal_cabo_pulmo","label":"Cabo Pulmo","type":"salon","tower":"Principal","aliases":["cabo pulmo"] },
+  { "id":"sal_miraflores","label":"Miraflores","type":"salon","tower":"Principal" },
+  { "id":"sal_buenavista","label":"BuenaVista","type":"salon","tower":"Principal","aliases":["buena vista","buenavista"] },
+  { "id":"sal_josefinos","label":"Josefinos","type":"salon","tower":"Principal" },
+
+  { "id":"zona_front_desk","label":"Front Desk","type":"zona","tower":"Principal","aliases":["front","recepción","recepcion","lobby"] },
+  { "id":"zona_awacate","label":"Awacate","type":"zona","tower":"Principal","aliases":["awacate"] },
+
+  { "id":"tower_a","label":"Torre A","type":"estructura","tower":"A","aliases":["torre a","torre 6", "6000"] },
+  { "id":"hab_a_6101","label":"Habitación 6101","type":"habitacion","tower":"A","parent":"tower_a","floor":"1","room_number":"6101","aliases":["hab 6101","rm 6101","habitacion 6101"] },
+  { "id":"hab_a_6102","label":"Habitación 6102","type":"habitacion","tower":"A","parent":"tower_a","floor":"1","room_number":"6102","aliases":["hab 6102","rm 6102","habitacion 6102"] },
+  { "id":"hab_a_6103","label":"Habitación 6103","type":"habitacion","tower":"A","parent":"tower_a","floor":"1","room_number":"6103","aliases":["hab 6103","rm 6103","habitacion 6103"] },
+
+  { "id":"hab_a_6201","label":"Habitación 6201","type":"habitacion","tower":"A","parent":"tower_a","floor":"2","room_number":"6201","aliases":["hab 6201","rm 6201","habitacion 6201"] },
+  { "id":"hab_a_6202","label":"Habitación 6202","type":"habitacion","tower":"A","parent":"tower_a","floor":"2","room_number":"6202","aliases":["hab 6202","rm 6202","habitacion 6202"] },
+  { "id":"hab_a_6203","label":"Habitación 6203","type":"habitacion","tower":"A","parent":"tower_a","floor":"2","room_number":"6203","aliases":["hab 6203","rm 6203","habitacion 6203"] },
+
+  { "id":"hab_a_6301","label":"Habitación 6301","type":"habitacion","tower":"A","parent":"tower_a","floor":"3","room_number":"6301","aliases":["hab 6301","rm 6301","habitacion 6301"] },
+  { "id":"hab_a_6302","label":"Habitación 6302","type":"habitacion","tower":"A","parent":"tower_a","floor":"3","room_number":"6302","aliases":["hab 6302","rm 6302","habitacion 6302"] },
+  { "id":"hab_a_6303","label":"Habitación 6303","type":"habitacion","tower":"A","parent":"tower_a","floor":"3","room_number":"6303","aliases":["hab 6303","rm 6303","habitacion 6303"] },
+
+  { "id":"hab_a_6401","label":"Habitación 6401","type":"habitacion","tower":"A","parent":"tower_a","floor":"4","room_number":"6401","aliases":["hab 6401","rm 6401","habitacion 6401"] },
+  { "id":"hab_a_6402","label":"Habitación 6402","type":"habitacion","tower":"A","parent":"tower_a","floor":"4","room_number":"6402","aliases":["hab 6402","rm 6402","habitacion 6402"] },
+  { "id":"hab_a_6403","label":"Habitación 6403","type":"habitacion","tower":"A","parent":"tower_a","floor":"4","room_number":"6403","aliases":["hab 6403","rm 6403","habitacion 6403"] },
+
+  { "id":"hab_a_6501","label":"Habitación 6501","type":"habitacion","tower":"A","parent":"tower_a","floor":"5","room_number":"6501","aliases":["hab 6501","rm 6501","habitacion 6501"] },
+  { "id":"hab_a_6502","label":"Habitación 6502","type":"habitacion","tower":"A","parent":"tower_a","floor":"5","room_number":"6502","aliases":["hab 6502","rm 6502","habitacion 6502"] },
+  { "id":"hab_a_6503","label":"Habitación 6503","type":"habitacion","tower":"A","parent":"tower_a","floor":"5","room_number":"6503","aliases":["hab 6503","rm 6503","habitacion 6503"] },
+
+  { "id":"hab_a_6601","label":"Habitación 6601","type":"habitacion","tower":"A","parent":"tower_a","floor":"6","room_number":"6601","aliases":["hab 6601","rm 6601","habitacion 6601"] },
+
+  { "id":"tower_b","label":"Torre B","type":"estructura","tower":"B","aliases":["torre b","torre 7", "7000"] },
+
+  { "id":"hab_b_7101","label":"Habitación 7101","type":"habitacion","tower":"B","parent":"tower_b","floor":"1","room_number":"7101","aliases":["hab 7101","rm 7101","habitacion 7101"] },
+  { "id":"hab_b_7102","label":"Habitación 7102","type":"habitacion","tower":"B","parent":"tower_b","floor":"1","room_number":"7102","aliases":["hab 7102","rm 7102","habitacion 7102"] },
+  { "id":"hab_b_7103","label":"Habitación 7103","type":"habitacion","tower":"B","parent":"tower_b","floor":"1","room_number":"7103","aliases":["hab 7103","rm 7103","habitacion 7103"] },
+
+  { "id":"hab_b_7201","label":"Habitación 7201","type":"habitacion","tower":"B","parent":"tower_b","floor":"2","room_number":"7201","aliases":["hab 7201","rm 7201","habitacion 7201"] },
+  { "id":"hab_b_7202","label":"Habitación 7202","type":"habitacion","tower":"B","parent":"tower_b","floor":"2","room_number":"7202","aliases":["hab 7202","rm 7202","habitacion 7202"] },
+  { "id":"hab_b_7203","label":"Habitación 7203","type":"habitacion","tower":"B","parent":"tower_b","floor":"2","room_number":"7203","aliases":["hab 7203","rm 7203","habitacion 7203"] },
+
+  { "id":"hab_b_7301","label":"Habitación 7301","type":"habitacion","tower":"B","parent":"tower_b","floor":"3","room_number":"7301","aliases":["hab 7301","rm 7301","habitacion 7301"] },
+  { "id":"hab_b_7302","label":"Habitación 7302","type":"habitacion","tower":"B","parent":"tower_b","floor":"3","room_number":"7302","aliases":["hab 7302","rm 7302","habitacion 7302"] },
+  { "id":"hab_b_7303","label":"Habitación 7303","type":"habitacion","tower":"B","parent":"tower_b","floor":"3","room_number":"7303","aliases":["hab 7303","rm 7303","habitacion 7303"] },
+
+  { "id":"hab_b_7401","label":"Habitación 7401","type":"habitacion","tower":"B","parent":"tower_b","floor":"4","room_number":"7401","aliases":["hab 7401","rm 7401","habitacion 7401"] },
+  { "id":"hab_b_7402","label":"Habitación 7402","type":"habitacion","tower":"B","parent":"tower_b","floor":"4","room_number":"7402","aliases":["hab 7402","rm 7402","habitacion 7402"] },
+  { "id":"hab_b_7403","label":"Habitación 7403","type":"habitacion","tower":"B","parent":"tower_b","floor":"4","room_number":"7403","aliases":["hab 7403","rm 7403","habitacion 7403"] },
+
+  { "id":"hab_b_7501","label":"Habitación 7501","type":"habitacion","tower":"B","parent":"tower_b","floor":"5","room_number":"7501","aliases":["hab 7501","rm 7501","habitacion 7501"] },
+  { "id":"hab_b_7502","label":"Habitación 7502","type":"habitacion","tower":"B","parent":"tower_b","floor":"5","room_number":"7502","aliases":["hab 7502","rm 7502","habitacion 7502"] },
+  { "id":"hab_b_7503","label":"Habitación 7503","type":"habitacion","tower":"B","parent":"tower_b","floor":"5","room_number":"7503","aliases":["hab 7503","rm 7503","habitacion 7503"] },
+
+  { "id":"hab_b_7601","label":"Habitación 7601","type":"habitacion","tower":"B","parent":"tower_b","floor":"6","room_number":"7601","aliases":["hab 7601","rm 7601","habitacion 7601"] },
+  { "id":"hab_b_7602","label":"Habitación 7602","type":"habitacion","tower":"B","parent":"tower_b","floor":"6","room_number":"7602","aliases":["hab 7602","rm 7602","habitacion 7602"] },
+
+  { "id":"hab_b_7701","label":"Habitación 7701","type":"habitacion","tower":"B","parent":"tower_b","floor":"7","room_number":"7701","aliases":["hab 7701","rm 7701","habitacion 7701"],"notes":"Rooftop de 7601-7602" },
+  { "id":"hab_b_7702","label":"Habitación 7702","type":"habitacion","tower":"B","parent":"tower_b","floor":"7","room_number":"7702","aliases":["hab 7702","rm 7702","habitacion 7702"],"notes":"Rooftop de 7601-7602" },
+  
+  { "id":"tower_c","label":"Torre C","type":"estructura","tower":"C","aliases":["torre c","torre 4", "4000"] },
+
+  { "id":"hab_c_4101","label":"Habitación 4101","type":"habitacion","tower":"C","parent":"tower_c","floor":"1","room_number":"4101","aliases":["hab 4101","rm 4101","habitacion 4101"] },
+  { "id":"hab_c_4102","label":"Habitación 4102","type":"habitacion","tower":"C","parent":"tower_c","floor":"1","room_number":"4102","aliases":["hab 4102","rm 4102","habitacion 4102"] },
+  { "id":"hab_c_4103","label":"Habitación 4103","type":"habitacion","tower":"C","parent":"tower_c","floor":"1","room_number":"4103","aliases":["hab 4103","rm 4103","habitacion 4103"] },
+  { "id":"hab_c_4104","label":"Habitación 4104","type":"habitacion","tower":"C","parent":"tower_c","floor":"1","room_number":"4104","aliases":["hab 4104","rm 4104","habitacion 4104"] },
+  { "id":"hab_c_4105","label":"Habitación 4105","type":"habitacion","tower":"C","parent":"tower_c","floor":"1","room_number":"4105","aliases":["hab 4105","rm 4105","habitacion 4105"] },
+
+  { "id":"hab_c_4201","label":"Habitación 4201","type":"habitacion","tower":"C","parent":"tower_c","floor":"2","room_number":"4201","aliases":["hab 4201","rm 4201","habitacion 4201"] },
+  { "id":"hab_c_4202","label":"Habitación 4202","type":"habitacion","tower":"C","parent":"tower_c","floor":"2","room_number":"4202","aliases":["hab 4202","rm 4202","habitacion 4202"] },
+  { "id":"hab_c_4203","label":"Habitación 4203","type":"habitacion","tower":"C","parent":"tower_c","floor":"2","room_number":"4203","aliases":["hab 4203","rm 4203","habitacion 4203"] },
+  { "id":"hab_c_4204","label":"Habitación 4204","type":"habitacion","tower":"C","parent":"tower_c","floor":"2","room_number":"4204","aliases":["hab 4204","rm 4204","habitacion 4204"] },
+  { "id":"hab_c_4205","label":"Habitación 4205","type":"habitacion","tower":"C","parent":"tower_c","floor":"2","room_number":"4205","aliases":["hab 4205","rm 4205","habitacion 4205"] },
+
+  { "id":"hab_c_4301","label":"Habitación 4301","type":"habitacion","tower":"C","parent":"tower_c","floor":"3","room_number":"4301","aliases":["hab 4301","rm 4301","habitacion 4301"] },
+  { "id":"hab_c_4302","label":"Habitación 4302","type":"habitacion","tower":"C","parent":"tower_c","floor":"3","room_number":"4302","aliases":["hab 4302","rm 4302","habitacion 4302"] },
+  { "id":"hab_c_4303","label":"Habitación 4303","type":"habitacion","tower":"C","parent":"tower_c","floor":"3","room_number":"4303","aliases":["hab 4303","rm 4303","habitacion 4303"] },
+  { "id":"hab_c_4304","label":"Habitación 4304","type":"habitacion","tower":"C","parent":"tower_c","floor":"3","room_number":"4304","aliases":["hab 4304","rm 4304","habitacion 4304"] },
+  { "id":"hab_c_4305","label":"Habitación 4305","type":"habitacion","tower":"C","parent":"tower_c","floor":"3","room_number":"4305","aliases":["hab 4305","rm 4305","habitacion 4305"] },
+
+  { "id":"hab_c_4401","label":"Habitación 4401","type":"habitacion","tower":"C","parent":"tower_c","floor":"4","room_number":"4401","aliases":["hab 4401","rm 4401","habitacion 4401"] },
+  { "id":"hab_c_4402","label":"Habitación 4402","type":"habitacion","tower":"C","parent":"tower_c","floor":"4","room_number":"4402","aliases":["hab 4402","rm 4402","habitacion 4402"] },
+  { "id":"hab_c_4403","label":"Habitación 4403","type":"habitacion","tower":"C","parent":"tower_c","floor":"4","room_number":"4403","aliases":["hab 4403","rm 4403","habitacion 4403"] },
+  { "id":"hab_c_4404","label":"Habitación 4404","type":"habitacion","tower":"C","parent":"tower_c","floor":"4","room_number":"4404","aliases":["hab 4404","rm 4404","habitacion 4404"] },
+  { "id":"hab_c_4405","label":"Habitación 4405","type":"habitacion","tower":"C","parent":"tower_c","floor":"4","room_number":"4405","aliases":["hab 4405","rm 4405","habitacion 4405"] },
+
+  { "id":"hab_c_4501","label":"Habitación 4501","type":"habitacion","tower":"C","parent":"tower_c","floor":"5","room_number":"4501","aliases":["hab 4501","rm 4501","habitacion 4501"] },
+  { "id":"hab_c_4502","label":"Habitación 4502","type":"habitacion","tower":"C","parent":"tower_c","floor":"5","room_number":"4502","aliases":["hab 4502","rm 4502","habitacion 4502"] },
+  { "id":"hab_c_4503","label":"Habitación 4503","type":"habitacion","tower":"C","parent":"tower_c","floor":"5","room_number":"4503","aliases":["hab 4503","rm 4503","habitacion 4503"] },
+  { "id":"hab_c_4504","label":"Habitación 4504","type":"habitacion","tower":"C","parent":"tower_c","floor":"5","room_number":"4504","aliases":["hab 4504","rm 4504","habitacion 4504"] },
+  { "id":"hab_c_4505","label":"Habitación 4505","type":"habitacion","tower":"C","parent":"tower_c","floor":"5","room_number":"4505","aliases":["hab 4505","rm 4505","habitacion 4505"] },
+
+  { "id":"hab_c_4601","label":"Habitación 4601","type":"habitacion","tower":"C","parent":"tower_c","floor":"6","room_number":"4601","aliases":["hab 4601","rm 4601","habitacion 4601"] },
+  { "id":"hab_c_4602","label":"Habitación 4602","type":"habitacion","tower":"C","parent":"tower_c","floor":"6","room_number":"4602","aliases":["hab 4602","rm 4602","habitacion 4602"] },
+
+  { "id":"hab_c_4701","label":"Habitación 4701","type":"habitacion","tower":"C","parent":"tower_c","floor":"7","room_number":"4701","aliases":["hab 4701","rm 4701","habitacion 4701"],"notes":"Rooftop de 4601-4602" },
+  { "id":"hab_c_4702","label":"Habitación 4702","type":"habitacion","tower":"C","parent":"tower_c","floor":"7","room_number":"4702","aliases":["hab 4702","rm 4702","habitacion 4702"],"notes":"Rooftop de 4601-4602" },
+
+  { "id":"tower_d","label":"Torre D","type":"estructura","tower":"D","aliases":["torre d","torre 5", "5000"] },
+
+  { "id":"hab_d_5101","label":"Habitación 5101","type":"habitacion","tower":"D","parent":"tower_d","floor":"1","room_number":"5101","aliases":["hab 5101","rm 5101","habitacion 5101"] },
+  { "id":"hab_d_5102","label":"Habitación 5102","type":"habitacion","tower":"D","parent":"tower_d","floor":"1","room_number":"5102","aliases":["hab 5102","rm 5102","habitacion 5102"] },
+  { "id":"hab_d_5103","label":"Habitación 5103","type":"habitacion","tower":"D","parent":"tower_d","floor":"1","room_number":"5103","aliases":["hab 5103","rm 5103","habitacion 5103"] },
+  { "id":"hab_d_5104","label":"Habitación 5104","type":"habitacion","tower":"D","parent":"tower_d","floor":"1","room_number":"5104","aliases":["hab 5104","rm 5104","habitacion 5104"] },
+  { "id":"hab_d_5105","label":"Habitación 5105","type":"habitacion","tower":"D","parent":"tower_d","floor":"1","room_number":"5105","aliases":["hab 5105","rm 5105","habitacion 5105"] },
+
+  { "id":"hab_d_5201","label":"Habitación 5201","type":"habitacion","tower":"D","parent":"tower_d","floor":"2","room_number":"5201","aliases":["hab 5201","rm 5201","habitacion 5201"] },
+  { "id":"hab_d_5202","label":"Habitación 5202","type":"habitacion","tower":"D","parent":"tower_d","floor":"2","room_number":"5202","aliases":["hab 5202","rm 5202","habitacion 5202"] },
+  { "id":"hab_d_5203","label":"Habitación 5203","type":"habitacion","tower":"D","parent":"tower_d","floor":"2","room_number":"5203","aliases":["hab 5203","rm 5203","habitacion 5203"] },
+  { "id":"hab_d_5204","label":"Habitación 5204","type":"habitacion","tower":"D","parent":"tower_d","floor":"2","room_number":"5204","aliases":["hab 5204","rm 5204","habitacion 5204"] },
+  { "id":"hab_d_5205","label":"Habitación 5205","type":"habitacion","tower":"D","parent":"tower_d","floor":"2","room_number":"5205","aliases":["hab 5205","rm 5205","habitacion 5205"] },
+
+  { "id":"hab_d_5301","label":"Habitación 5301","type":"habitacion","tower":"D","parent":"tower_d","floor":"3","room_number":"5301","aliases":["hab 5301","rm 5301","habitacion 5301"] },
+  { "id":"hab_d_5302","label":"Habitación 5302","type":"habitacion","tower":"D","parent":"tower_d","floor":"3","room_number":"5302","aliases":["hab 5302","rm 5302","habitacion 5302"] },
+  { "id":"hab_d_5303","label":"Habitación 5303","type":"habitacion","tower":"D","parent":"tower_d","floor":"3","room_number":"5303","aliases":["hab 5303","rm 5303","habitacion 5303"] },
+  { "id":"hab_d_5304","label":"Habitación 5304","type":"habitacion","tower":"D","parent":"tower_d","floor":"3","room_number":"5304","aliases":["hab 5304","rm 5304","habitacion 5304"] },
+  { "id":"hab_d_5305","label":"Habitación 5305","type":"habitacion","tower":"D","parent":"tower_d","floor":"3","room_number":"5305","aliases":["hab 5305","rm 5305","habitacion 5305"] },
+
+  { "id":"hab_d_5401","label":"Habitación 5401","type":"habitacion","tower":"D","parent":"tower_d","floor":"4","room_number":"5401","aliases":["hab 5401","rm 5401","habitacion 5401"] },
+  { "id":"hab_d_5402","label":"Habitación 5402","type":"habitacion","tower":"D","parent":"tower_d","floor":"4","room_number":"5402","aliases":["hab 5402","rm 5402","habitacion 5402"] },
+  { "id":"hab_d_5403","label":"Habitación 5403","type":"habitacion","tower":"D","parent":"tower_d","floor":"4","room_number":"5403","aliases":["hab 5403","rm 5403","habitacion 5403"] },
+  { "id":"hab_d_5404","label":"Habitación 5404","type":"habitacion","tower":"D","parent":"tower_d","floor":"4","room_number":"5404","aliases":["hab 5404","rm 5404","habitacion 5404"] },
+  { "id":"hab_d_5405","label":"Habitación 5405","type":"habitacion","tower":"D","parent":"tower_d","floor":"4","room_number":"5405","aliases":["hab 5405","rm 5405","habitacion 5405"] },
+
+  { "id":"hab_d_5501","label":"Habitación 5501","type":"habitacion","tower":"D","parent":"tower_d","floor":"5","room_number":"5501","aliases":["hab 5501","rm 5501","habitacion 5501"] },
+  { "id":"hab_d_5502","label":"Habitación 5502","type":"habitacion","tower":"D","parent":"tower_d","floor":"5","room_number":"5502","aliases":["hab 5502","rm 5502","habitacion 5502"] },
+  { "id":"hab_d_5503","label":"Habitación 5503","type":"habitacion","tower":"D","parent":"tower_d","floor":"5","room_number":"5503","aliases":["hab 5503","rm 5503","habitacion 5503"] },
+  { "id":"hab_d_5504","label":"Habitación 5504","type":"habitacion","tower":"D","parent":"tower_d","floor":"5","room_number":"5504","aliases":["hab 5504","rm 5504","habitacion 5504"] },
+  { "id":"hab_d_5505","label":"Habitación 5505","type":"habitacion","tower":"D","parent":"tower_d","floor":"5","room_number":"5505","aliases":["hab 5505","rm 5505","habitacion 5505"] },
+
+  { "id":"hab_d_5601","label":"Habitación 5601","type":"habitacion","tower":"D","parent":"tower_d","floor":"6","room_number":"5601","aliases":["hab 5601","rm 5601","habitacion 5601"] },
+  { "id":"hab_d_5602","label":"Habitación 5602","type":"habitacion","tower":"D","parent":"tower_d","floor":"6","room_number":"5602","aliases":["hab 5602","rm 5602","habitacion 5602"] },
+
+  { "id":"hab_d_5701","label":"Habitación 5701","type":"habitacion","tower":"D","parent":"tower_d","floor":"7","room_number":"5701","aliases":["hab 5701","rm 5701","habitacion 5701"],"notes":"Rooftop de 5601-5602" },
+  { "id":"hab_d_5702","label":"Habitación 5702","type":"habitacion","tower":"D","parent":"tower_d","floor":"7","room_number":"5702","aliases":["hab 5702","rm 5702","habitacion 5702"],"notes":"Rooftop de 5601-5602" },
+
+  { "id":"tower_e","label":"Torre E","type":"estructura","tower":"E","aliases":["torre e","torre 2", "2000"] },
+
+  { "id":"hab_e_2101","label":"Habitación 2101","type":"habitacion","tower":"E","parent":"tower_e","floor":"1","room_number":"2101","aliases":["hab 2101","rm 2101","habitacion 2101"] },
+  { "id":"hab_e_2102","label":"Habitación 2102","type":"habitacion","tower":"E","parent":"tower_e","floor":"1","room_number":"2102","aliases":["hab 2102","rm 2102","habitacion 2102"] },
+
+  { "id":"hab_e_2201","label":"Habitación 2201","type":"habitacion","tower":"E","parent":"tower_e","floor":"2","room_number":"2201","aliases":["hab 2201","rm 2201","habitacion 2201"] },
+  { "id":"hab_e_2202","label":"Habitación 2202","type":"habitacion","tower":"E","parent":"tower_e","floor":"2","room_number":"2202","aliases":["hab 2202","rm 2202","habitacion 2202"] },
+  { "id":"hab_e_2203","label":"Habitación 2203","type":"habitacion","tower":"E","parent":"tower_e","floor":"2","room_number":"2203","aliases":["hab 2203","rm 2203","habitacion 2203"] },
+  { "id":"hab_e_2204","label":"Habitación 2204","type":"habitacion","tower":"E","parent":"tower_e","floor":"2","room_number":"2204","aliases":["hab 2204","rm 2204","habitacion 2204"] },
+  { "id":"hab_e_2205","label":"Habitación 2205","type":"habitacion","tower":"E","parent":"tower_e","floor":"2","room_number":"2205","aliases":["hab 2205","rm 2205","habitacion 2205"] },
+
+  { "id":"hab_e_2301","label":"Habitación 2301","type":"habitacion","tower":"E","parent":"tower_e","floor":"3","room_number":"2301","aliases":["hab 2301","rm 2301","habitacion 2301"] },
+  { "id":"hab_e_2302","label":"Habitación 2302","type":"habitacion","tower":"E","parent":"tower_e","floor":"3","room_number":"2302","aliases":["hab 2302","rm 2302","habitacion 2302"] },
+  { "id":"hab_e_2303","label":"Habitación 2303","type":"habitacion","tower":"E","parent":"tower_e","floor":"3","room_number":"2303","aliases":["hab 2303","rm 2303","habitacion 2303"] },
+  { "id":"hab_e_2304","label":"Habitación 2304","type":"habitacion","tower":"E","parent":"tower_e","floor":"3","room_number":"2304","aliases":["hab 2304","rm 2304","habitacion 2304"] },
+  { "id":"hab_e_2305","label":"Habitación 2305","type":"habitacion","tower":"E","parent":"tower_e","floor":"3","room_number":"2305","aliases":["hab 2305","rm 2305","habitacion 2305"] },
+
+  { "id":"hab_e_2401","label":"Habitación 2401","type":"habitacion","tower":"E","parent":"tower_e","floor":"4","room_number":"2401","aliases":["hab 2401","rm 2401","habitacion 2401"] },
+  { "id":"hab_e_2402","label":"Habitación 2402","type":"habitacion","tower":"E","parent":"tower_e","floor":"4","room_number":"2402","aliases":["hab 2402","rm 2402","habitacion 2402"] },
+  { "id":"hab_e_2403","label":"Habitación 2403","type":"habitacion","tower":"E","parent":"tower_e","floor":"4","room_number":"2403","aliases":["hab 2403","rm 2403","habitacion 2403"] },
+  { "id":"hab_e_2404","label":"Habitación 2404","type":"habitacion","tower":"E","parent":"tower_e","floor":"4","room_number":"2404","aliases":["hab 2404","rm 2404","habitacion 2404"] },
+  { "id":"hab_e_2405","label":"Habitación 2405","type":"habitacion","tower":"E","parent":"tower_e","floor":"4","room_number":"2405","aliases":["hab 2405","rm 2405","habitacion 2405"] },
+
+  { "id":"hab_e_2501","label":"Habitación 2501","type":"habitacion","tower":"E","parent":"tower_e","floor":"5","room_number":"2501","aliases":["hab 2501","rm 2501","habitacion 2501"] },
+  { "id":"hab_e_2502","label":"Habitación 2502","type":"habitacion","tower":"E","parent":"tower_e","floor":"5","room_number":"2502","aliases":["hab 2502","rm 2502","habitacion 2502"] },
+  { "id":"hab_e_2503","label":"Habitación 2503","type":"habitacion","tower":"E","parent":"tower_e","floor":"5","room_number":"2503","aliases":["hab 2503","rm 2503","habitacion 2503"] },
+  { "id":"hab_e_2504","label":"Habitación 2504","type":"habitacion","tower":"E","parent":"tower_e","floor":"5","room_number":"2504","aliases":["hab 2504","rm 2504","habitacion 2504"] },
+  { "id":"hab_e_2505","label":"Habitación 2505","type":"habitacion","tower":"E","parent":"tower_e","floor":"5","room_number":"2505","aliases":["hab 2505","rm 2505","habitacion 2505"] },
+
+  { "id":"hab_e_2601","label":"Habitación 2601","type":"habitacion","tower":"E","parent":"tower_e","floor":"6","room_number":"2601","aliases":["hab 2601","rm 2601","habitacion 2601"] },
+
+  { "id":"hab_e_2602","label":"Habitación 2602","type":"habitacion","tower":"E","parent":"tower_e","floor":"6","room_number":"2602","aliases":["hab 2602","rm 2602","habitacion 2602"],"notes":"Rooftop de 2601" },
+  { "id":"hab_e_2701","label":"Habitación 2701","type":"habitacion","tower":"E","parent":"tower_e","floor":"7","room_number":"2701","aliases":["hab 2701","rm 2701","habitacion 2701"],"notes":"Rooftop de 2601" },
+
+  { "id":"sal_ballroom","label":"Ballroom","type":"salon","tower":"E" },
+
+  { "id":"tower_f","label":"Torre F","type":"estructura","tower":"F","aliases":["torre f","torre 3", "3000"] },
+
+  { "id":"hab_f_3101","label":"Habitación 3101","type":"habitacion","tower":"F","parent":"tower_f","floor":"1","room_number":"3101","aliases":["hab 3101","rm 3101","habitacion 3101"] },
+  { "id":"hab_f_3102","label":"Habitación 3102","type":"habitacion","tower":"F","parent":"tower_f","floor":"1","room_number":"3102","aliases":["hab 3102","rm 3102","habitacion 3102"] },
+  { "id":"hab_f_3103","label":"Habitación 3103","type":"habitacion","tower":"F","parent":"tower_f","floor":"1","room_number":"3103","aliases":["hab 3103","rm 3103","habitacion 3103"] },
+  { "id":"hab_f_3104","label":"Habitación 3104","type":"habitacion","tower":"F","parent":"tower_f","floor":"1","room_number":"3104","aliases":["hab 3104","rm 3104","habitacion 3104"] },
+  { "id":"hab_f_3105","label":"Habitación 3105","type":"habitacion","tower":"F","parent":"tower_f","floor":"1","room_number":"3105","aliases":["hab 3105","rm 3105","habitacion 3105"] },
+
+  { "id":"hab_f_3201","label":"Habitación 3201","type":"habitacion","tower":"F","parent":"tower_f","floor":"2","room_number":"3201","aliases":["hab 3201","rm 3201","habitacion 3201"] },
+  { "id":"hab_f_3202","label":"Habitación 3202","type":"habitacion","tower":"F","parent":"tower_f","floor":"2","room_number":"3202","aliases":["hab 3202","rm 3202","habitacion 3202"] },
+  { "id":"hab_f_3203","label":"Habitación 3203","type":"habitacion","tower":"F","parent":"tower_f","floor":"2","room_number":"3203","aliases":["hab 3203","rm 3203","habitacion 3203"] },
+  { "id":"hab_f_3204","label":"Habitación 3204","type":"habitacion","tower":"F","parent":"tower_f","floor":"2","room_number":"3204","aliases":["hab 3204","rm 3204","habitacion 3204"] },
+  { "id":"hab_f_3205","label":"Habitación 3205","type":"habitacion","tower":"F","parent":"tower_f","floor":"2","room_number":"3205","aliases":["hab 3205","rm 3205","habitacion 3205"] },
+
+  { "id":"hab_f_3301","label":"Habitación 3301","type":"habitacion","tower":"F","parent":"tower_f","floor":"3","room_number":"3301","aliases":["hab 3301","rm 3301","habitacion 3301"] },
+  { "id":"hab_f_3302","label":"Habitación 3302","type":"habitacion","tower":"F","parent":"tower_f","floor":"3","room_number":"3302","aliases":["hab 3302","rm 3302","habitacion 3302"] },
+  { "id":"hab_f_3303","label":"Habitación 3303","type":"habitacion","tower":"F","parent":"tower_f","floor":"3","room_number":"3303","aliases":["hab 3303","rm 3303","habitacion 3303"] },
+  { "id":"hab_f_3304","label":"Habitación 3304","type":"habitacion","tower":"F","parent":"tower_f","floor":"3","room_number":"3304","aliases":["hab 3304","rm 3304","habitacion 3304"] },
+  { "id":"hab_f_3305","label":"Habitación 3305","type":"habitacion","tower":"F","parent":"tower_f","floor":"3","room_number":"3305","aliases":["hab 3305","rm 3305","habitacion 3305"] },
+
+  { "id":"hab_f_3401","label":"Habitación 3401","type":"habitacion","tower":"F","parent":"tower_f","floor":"4","room_number":"3401","aliases":["hab 3401","rm 3401","habitacion 3401"] },
+  { "id":"hab_f_3402","label":"Habitación 3402","type":"habitacion","tower":"F","parent":"tower_f","floor":"4","room_number":"3402","aliases":["hab 3402","rm 3402","habitacion 3402"] },
+  { "id":"hab_f_3403","label":"Habitación 3403","type":"habitacion","tower":"F","parent":"tower_f","floor":"4","room_number":"3403","aliases":["hab 3403","rm 3403","habitacion 3403"] },
+  { "id":"hab_f_3404","label":"Habitación 3404","type":"habitacion","tower":"F","parent":"tower_f","floor":"4","room_number":"3404","aliases":["hab 3404","rm 3404","habitacion 3404"] },
+  { "id":"hab_f_3405","label":"Habitación 3405","type":"habitacion","tower":"F","parent":"tower_f","floor":"4","room_number":"3405","aliases":["hab 3405","rm 3405","habitacion 3405"] },
+
+  { "id":"hab_f_3501","label":"Habitación 3501","type":"habitacion","tower":"F","parent":"tower_f","floor":"5","room_number":"3501","aliases":["hab 3501","rm 3501","habitacion 3501"] },
+  { "id":"hab_f_3502","label":"Habitación 3502","type":"habitacion","tower":"F","parent":"tower_f","floor":"5","room_number":"3502","aliases":["hab 3502","rm 3502","habitacion 3502"] },
+  { "id":"hab_f_3503","label":"Habitación 3503","type":"habitacion","tower":"F","parent":"tower_f","floor":"5","room_number":"3503","aliases":["hab 3503","rm 3503","habitacion 3503"] },
+  { "id":"hab_f_3504","label":"Habitación 3504","type":"habitacion","tower":"F","parent":"tower_f","floor":"5","room_number":"3504","aliases":["hab 3504","rm 3504","habitacion 3504"] },
+  { "id":"hab_f_3505","label":"Habitación 3505","type":"habitacion","tower":"F","parent":"tower_f","floor":"5","room_number":"3505","aliases":["hab 3505","rm 3505","habitacion 3505"] },
+
+  { "id":"hab_f_3601","label":"Habitación 3601","type":"habitacion","tower":"F","parent":"tower_f","floor":"6","room_number":"3601","aliases":["hab 3601","rm 3601","habitacion 3601"] },
+  { "id":"hab_f_3602","label":"Habitación 3602","type":"habitacion","tower":"F","parent":"tower_f","floor":"6","room_number":"3602","aliases":["hab 3602","rm 3602","habitacion 3602"] },
+  { "id":"hab_f_3603","label":"Habitación 3603","type":"habitacion","tower":"F","parent":"tower_f","floor":"6","room_number":"3603","aliases":["hab 3603","rm 3603","habitacion 3603"] },
+
+  { "id":"hab_f_3701","label":"Habitación 3701","type":"habitacion","tower":"F","parent":"tower_f","floor":"7","room_number":"3701","aliases":["hab 3701","rm 3701","habitacion 3701"],"notes":"Rooftop de 3601" },
+
+  { "id":"ofc_f_hskp","label":"Oficina Ama de llaves / HSKP","type":"oficina","tower":"F","parent":"tower_f","aliases":["ama de llaves","hskp"] },
+  { "id":"ofc_f_capacitacion","label":"Capacitación","type":"oficina","tower":"F","parent":"tower_f","aliases":["capacitacion"] },
+  { "id":"ofc_f_rrhh","label":"RRHH","type":"oficina","tower":"F","parent":"tower_f","aliases":["recursos humanos"] },
+  { "id":"ofc_f_reservas","label":"Reservas","type":"oficina","tower":"F","parent":"tower_f" },
+  { "id":"ofc_f_finanzas","label":"Finanzas","type":"oficina","tower":"F","parent":"tower_f" },
+  { "id":"ofc_f_mantenimiento","label":"Oficina Mantenimiento","type":"oficina","tower":"F","parent":"tower_f" },
+  { "id":"ofc_f_steward","label":"Steward","type":"oficina","tower":"F","parent":"tower_f" },
+  { "id":"ofc_f_roperia","label":"Ropería","type":"oficina","tower":"F","parent":"tower_f","aliases":["roperia"] },
+
+  { "id":"cc_rooftop_f","label":"Rooftop F","type":"centro_consumo","tower":"F","parent":"tower_f","aliases":["rooftop f"] },
+
+  { "id":"zona_f_oxxo","label":"Oxxo","type":"zona","tower":"F","parent":"tower_f" },
+  { "id":"zona_f_cocinarte","label":"Cocinarte / Comedor","type":"zona","tower":"F","parent":"tower_f","aliases":["comedor"] },
+
+  
+  { "id":"tower_g","label":"Torre G","type":"estructura","tower":"G","aliases":["torre g","torre 8", "8000"] },
+
+  { "id":"ofc_g_casa_gerencia","label":"Casa Gerencia","type":"oficina","tower":"G","parent":"tower_g","floor":"1" },
+  { "id":"ofc_g_direccion_general","label":"Oficina Gerencia / Dirección General","type":"oficina","tower":"G","parent":"tower_g","floor":"1","aliases":["direccion general"] },
+  { "id":"ofc_g_asistente_ejecutiva","label":"Asistente Ejecutiva","type":"oficina","tower":"G","parent":"tower_g","floor":"1","aliases":["asistente"] },
+  { "id":"ofc_g_resort_manager","label":"Resort Manager","type":"oficina","tower":"G","parent":"tower_g","floor":"1" },
+  { "id":"ofc_g_direccion_ayb","label":"Dirección AyB","type":"oficina","tower":"G","parent":"tower_g","floor":"1","aliases":["direccion ayb"] },
+
+  { "id":"ofc_g_consultorio","label":"Consultorio","type":"oficina","tower":"G","parent":"tower_g","floor":"2" },
+  { "id":"ofc_g_residencias_dir","label":"Oficina Residencias Dirección","type":"oficina","tower":"G","parent":"tower_g","floor":"2","aliases":["residencias direccion"] },
+  { "id":"ofc_g_fianzas_tortuga","label":"Fianzas Tortuga","type":"oficina","tower":"G","parent":"tower_g","floor":"2","aliases":["fianzas","tortuga"] },
+
+  { "id":"cc_rooftop_g","label":"Rooftop G","type":"centro_consumo","tower":"G","parent":"tower_g","aliases":["rooftop g"] },
+
+  
+  { "id":"cc_nido","label":"Nido","type":"centro_consumo","aliases":["el nido","nido"] },
+  { "id":"cc_nidito","label":"Nidito","type":"centro_consumo","aliases":["el nidito","nidito"] },
+  { "id":"zona_cocina_nidito","label":"Cocina Nidito","type":"estructura","parent":"cc_nidito","aliases":["cocina de nidito","cocina nidito"] },
+
+  { "id":"cc_spa","label":"Spa","type":"centro_consumo","aliases":["spa"] },
+  { "id":"ofc_spa_terapeutas","label":"Oficina Terapeutas","type":"oficina","parent":"cc_spa","aliases":["oficina de terapeutas"] },
+  { "id":"ofc_spa","label":"Oficina Spa","type":"oficina","parent":"cc_spa","aliases":["oficina del spa"] },
+
+  { "id":"cc_kids_club","label":"Kids Club","type":"centro_consumo","aliases":["kids","kids club"] },
+  { "id":"cc_cinema","label":"Cinema","type":"centro_consumo","aliases":["cine","cinema"] },
+
+  { "id":"zona_beach_store","label":"Beach Store","type":"zona","aliases":["tienda de playa","beach store"] },
+  { "id":"ofc_beach_store_retail","label":"Oficina de Retail","type":"oficina","parent":"zona_beach_store","aliases":["retail"] },
+  { "id":"zona_beach_store_cava","label":"Cava de Vinos","type":"zona","parent":"zona_beach_store","aliases":["cava","vinos"] },
+
+  { "id":"villas_plataforma_1","label":"Plataforma 1","type":"estructura","structure":"Villas","aliases":["plataforma 1"] },
+  { "id":"villa_01","label":"Villa 1","type":"villa","structure":"Villas","parent":"villas_plataforma_1","villa_number":"1","aliases":["villa 1", "v1"] },
+  { "id":"villa_02","label":"Villa 2","type":"villa","structure":"Villas","parent":"villas_plataforma_1","villa_number":"2","aliases":["villa 2", "v2"] },
+  { "id":"villa_03","label":"Villa 3","type":"villa","structure":"Villas","parent":"villas_plataforma_1","villa_number":"3","aliases":["villa 3", "v3"] },
+  { "id":"villa_04","label":"Villa 4","type":"villa","structure":"Villas","parent":"villas_plataforma_1","villa_number":"4","aliases":["villa 4", "v4"] },
+  { "id":"villa_05v","label":"Villa 5","type":"villa","structure":"Villas","parent":"villas_plataforma_1","villa_number":"5","aliases":["villa 5", "v5"] },
+  { "id":"villa_06","label":"Villa 6","type":"villa","structure":"Villas","parent":"villas_plataforma_1","villa_number":"6","aliases":["villa 6", "v6"] },
+  { "id":"villa_07","label":"Villa 7","type":"villa","structure":"Villas","parent":"villas_plataforma_1","villa_number":"7","aliases":["villa 7", "v7"] },
+  { "id":"villa_08","label":"Villa 8","type":"villa","structure":"Villas","parent":"villas_plataforma_1","villa_number":"8","aliases":["villa 8", "v8"] },
+  { "id":"villa_09","label":"Villa 9","type":"villa","structure":"Villas","parent":"villas_plataforma_1","villa_number":"9","aliases":["villa 9", "v9"] },
+
+  { "id":"villas_garden","label":"Garden","type":"estructura","structure":"Villas","aliases":["garden"] },
+  { "id":"villa_garden_1","label":"Garden 1","type":"villa","structure":"Villas","parent":"villas_garden","villa_number":"G1","aliases":["garden 1"] },
+  { "id":"villa_garden_2","label":"Garden 2","type":"villa","structure":"Villas","parent":"villas_garden","villa_number":"G2","aliases":["garden 2"] },
+  { "id":"villa_garden_3","label":"Garden 3","type":"villa","structure":"Villas","parent":"villas_garden","villa_number":"G3","aliases":["garden 3"] },
+  { "id":"villa_garden_4","label":"Garden 4","type":"villa","structure":"Villas","parent":"villas_garden","villa_number":"G4","aliases":["garden 4"] },
+
+  { "id":"villas_plataforma_2","label":"Plataforma 2","type":"estructura","structure":"Villas","aliases":["plataforma 2"] },
+  { "id":"villa_10","label":"Villa 10","type":"villa","structure":"Villas","parent":"villas_plataforma_2","villa_number":"10","aliases":["villa 10", "v10"] },
+  { "id":"villa_11","label":"Villa 11","type":"villa","structure":"Villas","parent":"villas_plataforma_2","villa_number":"11","aliases":["villa 11", "v11"] },
+  { "id":"villa_12","label":"Villa 12","type":"villa","structure":"Villas","parent":"villas_plataforma_2","villa_number":"12","aliases":["villa 12", "v12"] },
+  { "id":"villa_13","label":"Villa 13","type":"villa","structure":"Villas","parent":"villas_plataforma_2","villa_number":"13","aliases":["villa 13", "v13"] },
+  { "id":"villa_14","label":"Villa 14","type":"villa","structure":"Villas","parent":"villas_plataforma_2","villa_number":"14","aliases":["villa 14", "v14"] },
+  { "id":"villa_15","label":"Villa 15","type":"villa","structure":"Villas","parent":"villas_plataforma_2","villa_number":"15","aliases":["villa 15", "v15"] },
+  { "id":"villa_16","label":"Villa 16","type":"villa","structure":"Villas","parent":"villas_plataforma_2","villa_number":"16","aliases":["villa 16", "v16"] },
+  { "id":"villa_17","label":"Villa 17","type":"villa","structure":"Villas","parent":"villas_plataforma_2","villa_number":"17","aliases":["villa 17", "v17"] },
+  { "id":"villa_18","label":"Villa 18","type":"villa","structure":"Villas","parent":"villas_plataforma_2","villa_number":"18","aliases":["villa 18", "v18"] }
+]
+

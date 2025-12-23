@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Dashboard Incidencias</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    h1 { margin: 0 0 16px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #eee; padding: 10px; text-align: left; }
+    thead th { position: sticky; top: 0; background: #fafafa; }
+    .pill { padding: 3px 8px; border-radius: 12px; background: #eef; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Incidencias</h1>
+  <div id="status">Cargando…</div>
+  <table id="grid" style="display:none">
+    <thead>
+      <tr>
+        <th>Folio</th>
+        <th>Descripción</th>
+        <th>Lugar</th>
+        <th>Área</th>
+        <th>Estado</th>
+        <th>Creado</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    // Si ya tienes un endpoint /api/incidents, úsalo aquí.
+    // Si aún no, puedes probar con /api/health para validar que Express responde.
+    fetch('/api/incidents?limit=50&status=open')
+      .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+      .then(({ data }) => {
+        const tbody = document.querySelector('#grid tbody');
+        const rows = (data || []).map(r => `
+          <tr>
+            <td>${r.folio ?? '—'}</td>
+            <td>${r.descripcion ?? '—'}</td>
+            <td>${r.lugar ?? '—'}</td>
+            <td><span class="pill">${(r.area_destino || '—').toUpperCase()}</span></td>
+            <td>${r.status ?? '—'}</td>
+            <td>${r.created_at ?? '—'}</td>
+          </tr>
+        `).join('');
+        tbody.innerHTML = rows;
+        document.getElementById('status').style.display = 'none';
+        document.getElementById('grid').style.display = '';
+      })
+      .catch(err => {
+        document.getElementById('status').textContent = 'No pude cargar /api/incidents: ' + err;
+      });
+  </script>
+</body>
+</html>

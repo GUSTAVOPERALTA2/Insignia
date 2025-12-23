@@ -1,0 +1,158 @@
+{
+  "identificadores": {
+    "it": {
+      "palabras": [
+        "televisión",
+        "television",
+        "tv",
+        "tele",
+        "canales",
+        "switch",
+        "it",
+        "encender",
+        "internet",
+        "chromecast",
+        "conexión",
+        "control",
+        "fldsmdfsr",
+        "teléfono",
+        "controles"
+      ],
+      "frases": [
+        "problema en el sistema",
+        "la aplicación no responde",
+        "error crítico"
+      ]
+    },
+    "ama": {
+      "palabras": [
+        "hskp",
+        "limpio",
+        "limpiar",
+        "limpieza",
+        "sabanas",
+        "sofacama",
+        "trapeador",
+        "turndown",
+        "cortesía",
+        "sofa",
+        "turn down",
+        "cortesía nocturna",
+        "cama",
+        "sabana",
+        "ropa",
+        "hipoalergénico",
+        "bote de basura",
+        "almohada",
+        "almohada sintética"
+      ],
+      "frases": []
+    },
+    "man": {
+      "palabras": [
+        "mantenimiento",
+        "reparar",
+        "avería",
+        "chapa",
+        "puerta",
+        "pintura",
+        "luz",
+        "retoque",
+        "alberca",
+        "jacuzzi",
+        "terraza",
+        "cancel",
+        "cortina",
+        "mármol",
+        "coladera",
+        "regadera",
+        "a/c",
+        "regaton",
+        "silla",
+        "rgb",
+        "tira led",
+        "wc",
+        "tv",
+        "madera",
+        "plafón",
+        "minibar",
+        "lavabo",
+        "cables",
+        "marco",
+        "pintar",
+        "gotera",
+        "plunge pool",
+        "encender",
+        "inundo",
+        "inundación",
+        "carpinteria",
+        "control",
+        "ventiladores",
+        "elevador",
+        "drenando",
+        "drenar",
+        "tina",
+        "controles",
+        "tornillo"
+      ],
+      "frases": [
+        "falla en el equipo",
+        "necesita reparación",
+        "problema de mantenimiento",
+        "aire acondicionado"
+      ]
+    },
+    "retro": {
+      "palabras": [
+        "avance",
+        "progreso",
+        "estado"
+      ],
+      "frases": [
+        "como vamos",
+        "como va",
+        "ya casi"
+      ]
+    }
+  },
+  "respuestas": {
+    "confirmacion": {
+      "frases": [
+        "confirmo",
+        "listo",
+        "finalizado"
+      ],
+      "palabras": [
+        "listo",
+        "ok"
+      ]
+    },
+    "feedback": {
+      "frases": [
+        "avance",
+        "estado",
+        "progreso",
+        "actualización",
+        "¿cómo va",
+        "¿qué tal va"
+      ],
+      "palabras": [
+        "avance",
+        "estado",
+        "progreso",
+        "actualización"
+      ]
+    }
+  },
+  "cancelacion": {
+    "palabras": [
+      "cancelar",
+      "anular",
+      "desestimar"
+    ],
+    "frases": [
+      "cancelar incidencia",
+      "anular tarea"
+    ]
+  }
+}
