@@ -84,7 +84,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /* ──────────────────────────────────────────────────────────────
  * 2) Imports del bot
  * ────────────────────────────────────────────────────────────── */
-const { hasMessageBeenHandled, markMessageHandled } = require('./modules/db/incidenceDB');
+// ✅ NOTA: El dedupe (hasMessageBeenHandled/markMessageHandled) se maneja en coreMessageRouter
 const { handleIncomingMessage } = require('./modules/core/coreMessageRouter');
 
 console.log('[BOOT] adminCommandRouter resolved:', require.resolve('./modules/core/adminCommandRouter'));
@@ -335,12 +335,8 @@ function createWaClient() {
     }
     if (isFromMe(msg) || isStatusBroadcast(msg)) return;
 
-    const waId = msg.id && (msg.id._serialized || msg.id);
-    if (waId && hasMessageBeenHandled(waId)) {
-      if (DEBUG) console.log('[INDEX] skip duplicate', waId);
-      return;
-    }
-    if (waId) markMessageHandled(waId);
+    // ✅ NOTA: El dedupe de mensajes se maneja en coreMessageRouter
+    // NO marcar aquí para evitar doble marcado
 
     const body = (msg.body || '').trim();
     if (DEBUG) console.log('[MSG] in', { chatId: msg.from, body: body || '(vacío / media)' });

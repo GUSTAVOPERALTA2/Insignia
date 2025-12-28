@@ -145,7 +145,28 @@ function initSQLite() {
   `);
 
   stmtInsertMsgHandled = db.prepare(`INSERT INTO messages_handled (wa_msg_id, processed_at) VALUES (?, ?)`);
-  stmtSelectMsgHandled = db.prepare(`SELECT wa_msg_id FROM messages_handled WHERE wa_msg_id = ?`);
+  stmtSelectMsgHandled = db.prepare(`SELECT wa_msg_id, processed_at FROM messages_handled WHERE wa_msg_id = ?`);
+  
+  // Limpiar mensajes manejados al iniciar
+  // VICEBOT_MSG_HANDLED_WIPE_ON_START=1 → limpia TODO (útil para desarrollo)
+  // VICEBOT_MSG_HANDLED_TTL_HOURS=24 → limpia solo los de más de 24 horas (default)
+  try {
+    const wipeAll = process.env.VICEBOT_MSG_HANDLED_WIPE_ON_START === '1';
+    
+    if (wipeAll) {
+      const result = db.prepare('DELETE FROM messages_handled').run();
+      if (DEBUG) console.log('[DB] wiped ALL handled messages on start', { deleted: result.changes });
+    } else {
+      const ttlHours = parseInt(process.env.VICEBOT_MSG_HANDLED_TTL_HOURS || '24', 10);
+      const cutoff = new Date(Date.now() - ttlHours * 60 * 60 * 1000).toISOString();
+      const result = db.prepare('DELETE FROM messages_handled WHERE processed_at < ?').run(cutoff);
+      if (DEBUG && result.changes > 0) {
+        console.log('[DB] cleaned up expired handled messages', { deleted: result.changes, ttlHours });
+      }
+    }
+  } catch (e) {
+    if (DEBUG) console.warn('[DB] cleanup err', e?.message);
+  }
 
   stmtInsertEvent = db.prepare(`
     INSERT INTO incident_events (id, incident_id, created_at, event_type, wa_msg_id, payload_json)
@@ -239,6 +260,7 @@ function nextFolioForArea(areaCode) {
 
 // Map + persist
 function mapDraftToRecord(draft, meta = {}) {
+  // ✅ Siempre generar ID nuevo (la DB es la fuente de verdad)
   const id = randomUUID();
   const ts = nowISO();
 
@@ -249,6 +271,7 @@ function mapDraftToRecord(draft, meta = {}) {
   const visionSafety = Array.isArray(meta.visionSafety) ? meta.visionSafety : [];
   const attachments  = Array.isArray(draft.attachments) ? draft.attachments : [];
 
+  // ✅ Siempre generar folio nuevo desde DB (la DB es la fuente de verdad para secuencias)
   const folio = nextFolioForArea(draft.area_destino) || null;
 
   return {
@@ -257,8 +280,8 @@ function mapDraftToRecord(draft, meta = {}) {
     created_at: ts,
     updated_at: ts,
     last_msg_at: ts,
-    status: 'open',
-    chat_id: meta.chatId || null,
+    status: draft.status || 'open',
+    chat_id: meta.chatId || draft.chat_id || null,
     wa_first_msg_id: meta.waFirstMsgId || null,
 
     descripcion: draft.descripcion || null,
@@ -309,11 +332,30 @@ function updateIncidentFolioIfMissing(incidentId, areaCode) {
   return folio;
 }
 
-// Idempotencia WA
+// Idempotencia WA (con expiración de 24 horas)
+const MSG_HANDLED_TTL_HOURS = parseInt(process.env.VICEBOT_MSG_HANDLED_TTL_HOURS || '24', 10);
+
 function hasMessageBeenHandled(waMsgId) {
   if (!db) return false;
-  return Boolean(stmtSelectMsgHandled.get(waMsgId));
+  const row = stmtSelectMsgHandled.get(waMsgId);
+  if (!row) return false;
+  
+  // Verificar si ha expirado (por defecto 24 horas)
+  const processedAt = new Date(row.processed_at);
+  const now = new Date();
+  const ageHours = (now - processedAt) / (1000 * 60 * 60);
+  
+  if (ageHours > MSG_HANDLED_TTL_HOURS) {
+    // Expirado, eliminar y retornar false
+    try {
+      db.prepare('DELETE FROM messages_handled WHERE wa_msg_id = ?').run(waMsgId);
+    } catch {}
+    return false;
+  }
+  
+  return true;
 }
+
 function markMessageHandled(waMsgId) {
   if (!db) return false;
   try { stmtInsertMsgHandled.run(waMsgId, nowISO()); return true; }

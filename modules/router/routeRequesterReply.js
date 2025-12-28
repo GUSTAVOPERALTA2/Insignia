@@ -5,6 +5,9 @@
 //  - clasificar el mensaje (feedback vs noise vs reopen/cancel/etc.)
 //  - decidir el siguiente estado del ticket (next_status)
 
+const fs = require('fs');
+const path = require('path');
+
 const FOLIO_RE = /\b[A-Z]{2,8}-\d{3,6}\b/;
 const DEBUG = (process.env.VICEBOT_DEBUG || '1') === '1';
 
@@ -15,6 +18,104 @@ const MAX_FEEDBACK_CHARS = parseInt(process.env.VICEBOT_REQ_MAX_FEEDBACK_CHARS |
 const MIN_CONF = parseFloat(process.env.VICEBOT_INTENT_CONFIDENCE_MIN || '0.50');
 
 const DEFAULT_TZ = process.env.VICEBOT_TZ || 'America/Mexico_City';
+
+// ──────────────────────────────────────────────────────────────
+// Cache de usuarios (users.json) para resolver nombres
+// ──────────────────────────────────────────────────────────────
+let usersCache = null;
+let usersCacheTime = 0;
+const USERS_CACHE_TTL = 60000; // 1 minuto
+
+function loadUsersCache() {
+  const now = Date.now();
+  if (usersCache && (now - usersCacheTime) < USERS_CACHE_TTL) {
+    return usersCache;
+  }
+  
+  try {
+    const usersPath = process.env.USERS_PATH || './data/users.json';
+    const fullPath = path.resolve(process.cwd(), usersPath);
+    
+    if (fs.existsSync(fullPath)) {
+      const data = fs.readFileSync(fullPath, 'utf8');
+      usersCache = JSON.parse(data);
+      usersCacheTime = now;
+    }
+  } catch (e) {
+    if (DEBUG) console.warn('[REQ-FB] loadUsersCache err:', e?.message);
+  }
+  
+  return usersCache || {};
+}
+
+function findUserByPhone(phoneId) {
+  const users = loadUsersCache();
+  if (!users || !phoneId) return null;
+  
+  // Buscar directamente por ID
+  if (users[phoneId]) return { id: phoneId, ...users[phoneId] };
+  
+  // Buscar por número (últimos 10 dígitos)
+  const digits = String(phoneId).replace(/\D/g, '');
+  if (digits.length < 10) return null;
+  
+  const shortSuffix = digits.slice(-10);
+  for (const [userId, userData] of Object.entries(users)) {
+    const userDigits = String(userId).replace(/\D/g, '');
+    if (userDigits.slice(-10) === shortSuffix) {
+      return { id: userId, ...userData };
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Resuelve el nombre del solicitante
+ */
+async function resolveRequesterName(client, msg, chatId) {
+  // 1. Buscar en users.json primero
+  const userFromCache = findUserByPhone(chatId);
+  if (userFromCache) {
+    const name = userFromCache.nombre || userFromCache.name;
+    const cargo = userFromCache.cargo;
+    if (name) {
+      return cargo ? `${name} (${cargo})` : name;
+    }
+  }
+  
+  // 2. Intentar obtener del contacto de WhatsApp
+  try {
+    const contact = await msg.getContact();
+    if (contact) {
+      const name = contact.pushname || contact.name || contact.number;
+      if (name) return name;
+    }
+  } catch (e) {
+    if (DEBUG) console.warn('[REQ-FB] getContact err:', e?.message);
+  }
+  
+  // 3. Intentar con client.getContactById
+  if (client && chatId) {
+    try {
+      const contact = await client.getContactById(chatId);
+      if (contact) {
+        const name = contact.pushname || contact.name || contact.number;
+        if (name) return name;
+      }
+    } catch (e) {
+      // Ignorar
+    }
+  }
+  
+  // 4. Fallback: número
+  const num = String(chatId).replace(/@.*$/, '').replace(/\D/g, '');
+  if (num.length >= 10) {
+    return num.slice(-10);
+  }
+  
+  return 'Solicitante';
+}
 
 // ✅ SAFE REPLY (absorbe "Session closed" sin matar proceso)
 let safeReply = null;
@@ -706,19 +807,52 @@ async function maybeHandleRequesterReply(client, msg) {
   // 8) Actualizar estado SOLO si relevante y confiable
   const currentStatus = ticketCtx.status || null;
   const nextStatusFromEngine = fb.next_status || currentStatus;
+  const statusChanged = nextStatusFromEngine && nextStatusFromEngine !== currentStatus;
+  
+  // Detectar si es cancelación o completado
+  const isCancelOrComplete = (nextStatusFromEngine === 'canceled' || nextStatusFromEngine === 'done') && statusChanged;
 
   if (fb.is_relevant && fb.confidence >= MIN_CONF) {
-    if (nextStatusFromEngine && nextStatusFromEngine !== currentStatus) {
+    if (statusChanged) {
       await updateStatus(incidentId, nextStatusFromEngine);
     }
 
     // 9.a) Notificar a grupos
     try {
-      await sendFollowUpToGroups(client, {
-        incident: inc,
-        message: noteText,
-        media: [],
-      });
+      if (isCancelOrComplete) {
+        // Mensaje especial para cancelación/completado con nombre del solicitante
+        const requesterName = await resolveRequesterName(client, msg, chatId);
+        const statusEmoji = nextStatusFromEngine === 'done' ? '✅' : '🚫';
+        const statusLabel = nextStatusFromEngine === 'done' ? 'Completado' : 'Cancelado';
+        const actionVerb = nextStatusFromEngine === 'done' ? 'marcó como completado' : 'canceló';
+        
+        const groupMessage = [
+          `${statusEmoji} *${inc.folio}* — ${statusLabel} por solicitante`,
+          ``,
+          `El solicitante ${actionVerb} este ticket.`,
+          ``,
+          `— _${requesterName}_`
+        ].join('\n');
+        
+        await sendFollowUpToGroups(client, {
+          incident: inc,
+          message: groupMessage,
+          media: [],
+        });
+        
+        if (DEBUG) console.log('[REQ-FB] notified group of requester action', { 
+          folio: inc.folio, 
+          action: nextStatusFromEngine,
+          requester: requesterName 
+        });
+      } else {
+        // Notificación normal de feedback
+        await sendFollowUpToGroups(client, {
+          incident: inc,
+          message: noteText,
+          media: [],
+        });
+      }
     } catch (e) {
       if (DEBUG) console.warn('[REQ-FB] follow-up notify err', e?.message || e);
     }
@@ -761,6 +895,10 @@ async function maybeHandleRequesterReply(client, msg) {
     if (shouldPingTeam) {
       await replySafe(msg, '🔔 Además, ya avisé al equipo para que le den seguimiento a este ticket.');
     }
+  } else if (isCancelOrComplete) {
+    // Respuesta especial para cancelación/completado
+    const statusLabel = nextStatusFromEngine === 'done' ? 'completado' : 'cancelado';
+    await replySafe(msg, `✅ El ticket *${inc.folio}* ha sido ${statusLabel}. Gracias por tu retroalimentación.`);
   } else {
     await replySafe(msg, '✅ Tu mensaje se agregó al ticket. Te avisaré aquí cuando haya novedades.');
   }

@@ -1,8 +1,14 @@
+# ─────────────────────────────
 # Node
+# ─────────────────────────────
 node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-
-# WhatsApp sessions
+# ─────────────────────────────
+# WhatsApp Web.js sessions / cache
+# ─────────────────────────────
 .wwebjs_auth/
 .wwebjs_auth_probe/
 .wwebjs_cache/
@@ -13,14 +19,65 @@ proyecto/.wwebjs_auth_probe/
 proyecto/.wwebjs_cache/
 proyecto/.wwebjs_cache_probe/
 
+# ─────────────────────────────
 # Logs
-
+# ─────────────────────────────
 logs/
 *.log
 
-# DB
+# ─────────────────────────────
+# Databases & runtime state
+# ─────────────────────────────
 *.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.db
 
+# Runtime data (Vicebot)
+data/attachments/
+data/folio_counters.json
+
+# Backups / exports
+*.xlsx
+*.csv
+*.bak
+
+# ─────────────────────────────
+# Environment
+# ─────────────────────────────
 .env
 .env.*
+!.env.example
+
+# ─────────────────────────────
+# OS / Editor junk
+# ─────────────────────────────
+.DS_Store
+Thumbs.db
+
+.vscode/
+!.vscode/extensions.json
+
+.idea/
+*.swp
+*.tmp
+
+# ─────────────────────────────
+# Build / cache
+# ─────────────────────────────
+dist/
+build/
+.cache/
+
+# ─────────────────────────────
+# Tests / local-only files
+# ─────────────────────────────
+indexTest.js
+test/
+coverage/
+
+# ─────────────────────────────
+# Legacy folder (ya eliminado)
+# ─────────────────────────────
+proyecto/data/
+proyecto/config/

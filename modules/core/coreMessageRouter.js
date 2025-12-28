@@ -21,6 +21,9 @@ const { maybeHandleTeamFeedback } = require('../router/routeTeamFeedback');
 const { maybeHandleRequesterReply } = require('../router/routeRequesterReply');
 const { maybeHandleGroupCancel } = require('../router/routeGroupsUpdate');
 
+// ✅ Router de consultas de tickets con lenguaje natural
+const { maybeHandleTicketQuery } = require('../router/routeTicketQuery');
+
 // ✅ FIX: tu router NI exporta handleTurn, no handleNITurn
 const { handleTurn } = require('../router/routeIncomingNI');
 
@@ -185,8 +188,36 @@ async function handleIncomingMessage(client, msg, opts = {}) {
       return false;
     }
 
-    // 1) Grupo: team feedback o cancel
+    // 1) Grupo: actualizaciones de estado (done/progress/cancel), consultas y evidencias
     if (isGroupId(chatId)) {
+      // ✅ PRIMERO: routeGroupsUpdate para actualizaciones de estado
+      // Maneja: "Listo", "Vamos", "Cancela, esto no es mío", etc.
+      try {
+        const handledUpdate = await maybeHandleGroupCancel(client, msg);
+        if (handledUpdate) {
+          if (waId) markMessageHandled(waId);
+          return true;
+        }
+      } catch (e) {
+        if (DEBUG) console.warn('[CORE-ROUTER] groupUpdate err', e?.message || e);
+        if (isSessionClosedError(e)) return false;
+      }
+
+      // ✅ SEGUNDO: Consultas de tickets con lenguaje natural
+      // Maneja: "tickets pendientes", "buscar cocina", etc.
+      try {
+        const handledQuery = await maybeHandleTicketQuery(client, msg);
+        if (handledQuery) {
+          if (waId) markMessageHandled(waId);
+          return true;
+        }
+      } catch (e) {
+        if (DEBUG) console.warn('[CORE-ROUTER] ticketQuery(group) err', e?.message || e);
+        if (isSessionClosedError(e)) return false;
+      }
+
+      // ✅ TERCERO: routeTeamFeedback para evidencias (fotos) y mensajes citando ticket
+      // Solo procesa si tiene FOTO o CITA el mensaje del ticket
       try {
         const handledTeam = await maybeHandleTeamFeedback(client, msg);
         if (handledTeam) {
@@ -198,23 +229,28 @@ async function handleIncomingMessage(client, msg, opts = {}) {
         if (isSessionClosedError(e)) return false;
       }
 
-      try {
-        const handledCancel = await maybeHandleGroupCancel(client, msg);
-        if (handledCancel) {
-          if (waId) markMessageHandled(waId);
-          return true;
-        }
-      } catch (e) {
-        if (DEBUG) console.warn('[CORE-ROUTER] groupCancel err', e?.message || e);
-        if (isSessionClosedError(e)) return false;
-      }
-
       // No se manejó en grupo
       return false;
     }
 
     // 2) DM
     const niContext = getNiContextForChat(chatId);
+
+    // ✅ PRIMERO: Consultas de tickets con lenguaje natural (antes de NL→CMD)
+    // Maneja: "tickets pendientes de IT", "mis tickets", "buscar cocina", etc.
+    // Solo si NO hay sesión N-I activa
+    if (!niContext.hasActiveNISession && body) {
+      try {
+        const handledQuery = await maybeHandleTicketQuery(client, msg);
+        if (handledQuery) {
+          if (waId) markMessageHandled(waId);
+          return true;
+        }
+      } catch (e) {
+        if (DEBUG) console.warn('[CORE-ROUTER] ticketQuery(DM) err', e?.message || e);
+        if (isSessionClosedError(e)) return false;
+      }
+    }
 
     // ✅ NL → CMD (IA) ANTES del intent router
     // Solo si NO hay sesión N-I activa y no es comando.

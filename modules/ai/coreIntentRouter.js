@@ -1,113 +1,77 @@
 // modules/ai/coreIntentRouter.js
-// Cerebro general / triage de mensajes.
-//
-// Responsabilidades:
-//  - Determinar tipo de mensaje (intención "macro"):
-//      * command           → comandos tipo "/bind", "/stats"
-//      * ni_new/ni_turn    → flujo de Nueva Incidencia
-//      * requester_feedback→ feedback del solicitante sobre un ticket
-//      * team_feedback     → feedback del equipo sobre un ticket
-//      * smalltalk         → saludos, conversación ligera, preguntas meta
-//      * help              → preguntas tipo "qué puedes hacer", "ayuda"
-//      * unknown           → no se pudo clasificar bien
-//  - Derivar target lógico:
-//      * routeIncomingNI
-//      * routeRequesterReply
-//      * routeTeamFeedback
-//      * commandRouter
-//      * smalltalkHandler
-//
-// NO hace:
-//  - No crea/actualiza tickets
-//  - No decide next_status
-//  - No maneja el flujo interno de N-I
-//
-// La idea es que el router central haga algo como:
-//
-//   const { classifyMessageIntent } = require('../ai/coreIntentRouter');
-//   const res = await classifyMessageIntent({ msg, text, context });
-//   switch (res.target) {
-//     case 'commandRouter':       return commandRouter.handle(msg);
-//     case 'routeIncomingNI':     return routeIncomingNI.handleTurn(client, msg, { ... });
-//     case 'routeRequesterReply': return routeRequesterReply.maybeHandleRequesterReply(client, msg);
-//     case 'routeTeamFeedback':   return routeTeamFeedback.maybeHandleTeamFeedback(client, msg);
-//     case 'smalltalkHandler':    return smalltalkHandler.handle(msg, res);
-//     default:
-//       // fallback/unknown
-//   }
-//
+// VERSIÓN MEJORADA: Mejor detección de incidentes vs ayuda general
 
 const DEBUG = (process.env.VICEBOT_DEBUG || '1') === '1';
 
-// FOLIO típico: MANT-00123, IT-999999, etc.
 const FOLIO_RE = /\b[A-Z]{2,8}-\d{3,6}\b/;
 
-// Palabras que suelen indicar problema/incidencia
+// ✅ AMPLIADO: Palabras que indican un problema/incidencia
 const INCIDENT_HINTS = [
-  'no sirve', 'no prende', 'no enciende',
-  'no hay', 'se descompuso', 'se desconfiguró', 'se desconfiguro',
-  'fallando', 'está fallando', 'esta fallando',
-  'fuga', 'gotea', 'rompió', 'rompio', 'tirando agua',
-  'no funciona', 'apagado', 'prende y se apaga',
-  'necesito ayuda', 'ayuda mantenimiento', 'ayuda sistemas', 'ayuda limpieza'
+  // Problemas generales
+  'no sirve', 'no prende', 'no enciende', 'no hay', 'se descompuso',
+  'fallando', 'falla', 'fallo', 'no funciona', 'dejo de funcionar',
+  'apagado', 'apagada', 'descompuesto', 'descompuesta',
+  // Agua/plomería
+  'fuga', 'gotea', 'goteo', 'tirando agua', 'tapado', 'tapada',
+  'atascado', 'atascada', 'no cae agua', 'sin agua', 'agua fria',
+  'agua caliente', 'regadera', 'lavamanos', 'lavabo', 'inodoro', 'wc',
+  // Eléctrico
+  'corto', 'cortocircuito', 'chispa', 'quemado', 'quemada', 'fundido',
+  'sin luz', 'no hay luz', 'apagon', 'contacto', 'enchufe',
+  // A/C
+  'aire', 'clima', 'a/c', 'ac', 'no enfria', 'muy frio', 'muy caliente',
+  // Mecánico/estructural
+  'trabado', 'trabada', 'atorado', 'atorada', 'roto', 'rota',
+  'rompio', 'quebrado', 'quebrada', 'dañado', 'dañada',
+  'no abre', 'no cierra', 'flojo', 'floja', 'caido', 'caida',
+  // Limpieza
+  'sucio', 'sucia', 'manchado', 'manchada', 'huele', 'olor', 'basura',
+  'cucaracha', 'insecto', 'bicho', 'hormiga',
+  // Mobiliario
+  'cortina', 'persiana', 'lampara', 'foco', 'television', 'tv', 'tele',
+  'control', 'puerta', 'ventana', 'llave', 'cerradura', 'chapa',
+  'cama', 'colchon', 'sabana', 'toalla', 'almohada',
+  // Urgencia
+  'urgente', 'urge', 'emergencia', 'inmediato',
+  // Solicitud de servicio
+  'necesito', 'ocupo', 'requiero', 'hace falta', 'falta',
 ];
 
-// Palabras que suelen ser saludos / smalltalk
+// ✅ NUEVO: Patrones regex para detectar incidentes
+const INCIDENT_PATTERNS = [
+  /no\s+(sirve|funciona|enciende|prende|hay|abre|cierra|enfria|calienta)\b/i,
+  /esta\s+(tapado|tapada|roto|rota|trabado|trabada|atorado|atorada|sucio|sucia|dañado|dañada)\b/i,
+  /se\s+(rompio|descompuso|atoro|trabo|tapo|cayo|quemo|fundio)\b/i,
+  /\b(fuga|goteo|gotera)\s+(de|en)?\s*(agua)?\b/i,
+  /\b(sin|no\s+hay)\s+(agua|luz|señal|internet|wifi)\b/i,
+  /\b(habitacion|hab|cuarto|room)\s*\d{3,4}\b/i,
+  /^\d{4}\b/i, // Empieza con número de habitación
+];
+
 const GREETING_HINTS = [
-  'hola', 'buen dia', 'buen día', 'buenas', 'buenos dias',
-  'buenos días', 'hey', 'hi', 'hello', 'qué tal', 'que tal'
+  'hola', 'buen dia', 'buenos dias', 'buenas tardes', 'buenas noches',
+  'hey', 'hi', 'hello', 'que tal', 'como estas'
 ];
 
-// Preguntas meta sobre el bot
 const META_BOT_HINTS = [
-  'como te llamas', 'cómo te llamas',
-  'quien eres', 'quién eres',
-  'que eres', 'qué eres',
-  'que puedes hacer', 'qué puedes hacer',
-  'como funcionas', 'cómo funcionas'
+  'como te llamas', 'quien eres', 'que eres', 'que puedes hacer',
+  'eres un bot', 'eres robot', 'eres humano'
 ];
 
-// Preguntas tipo ayuda
-const HELP_HINTS = [
-  'ayuda', 'help', 'como uso', 'cómo uso',
-  'como funciona esto', 'cómo funciona esto',
-  'que hago', 'qué hago'
-];
+// ✅ MODIFICADO: Ayuda general (sin contexto de problema)
+const HELP_HINTS = ['como uso', 'como funciona', 'instrucciones', 'tutorial'];
 
-// 🔹 NUEVO: patrones de “pregunta de estatus” del ticket (sin folio)
 const STATUS_QUERY_HINTS = [
-  'como va',
-  'cómo va',
-  'como vamos',
-  'cómo vamos',
-  'como sigue',
-  'cómo sigue',
-  'como van',
-  'cómo van',
-  'que ha pasado',
-  'qué ha pasado',
-  'que paso con',
-  'qué pasó con',
-  'ya quedaron',
-  'ya lo arreglaron',
-  'ya vinieron',
-  'han venido',
-  'van a venir',
-  'estatus',
-  'status',
-  'estado del ticket',
-  'estatus del ticket',
-  'estado del reporte',
-  'estatus del reporte',
-  'como va el servicio',
-  'cómo va el servicio',
+  'como va', 'como vamos', 'como sigue', 'que ha pasado',
+  'ya quedaron', 'ya lo arreglaron', 'estatus', 'status',
+  'alguna novedad', 'hay novedad', 'ya esta listo'
 ];
 
-// Helper: normalizar texto básico
 function norm(text = '') {
   return String(text)
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
+    .replace(/@\d+/g, '') // Eliminar menciones
     .trim();
 }
 
@@ -116,7 +80,11 @@ function containsAny(haystack, needles) {
   return needles.some(n => t.includes(norm(n)));
 }
 
-// Detecciones sencillas
+function matchesAnyPattern(text, patterns) {
+  const t = norm(text);
+  return patterns.some(p => p.test(t));
+}
+
 function looksLikeCommand(text) {
   return /^\/\w+/.test(String(text).trim());
 }
@@ -124,7 +92,7 @@ function looksLikeCommand(text) {
 function isShortGreeting(text) {
   const t = norm(text);
   if (!t) return false;
-  if (t.length > 40) return false; // saludos suelen ser cortos
+  if (t.length > 40) return false;
   return containsAny(t, GREETING_HINTS);
 }
 
@@ -132,78 +100,68 @@ function looksLikeMetaBotQuestion(text) {
   return containsAny(text, META_BOT_HINTS);
 }
 
+// ✅ MODIFICADO: Ayuda general solo si NO tiene indicios de problema
 function looksLikeHelpQuestion(text) {
   const t = norm(text);
+  // Si contiene hints de ayuda general
   if (containsAny(t, HELP_HINTS)) return true;
-  // Preguntas cortas con "ayuda"
-  if (t.includes('ayuda') && t.length < 80) return true;
+  // "ayuda" solo si es muy corto y sin número de habitación
+  if (t.includes('ayuda') && t.length < 30 && !/\d{4}/.test(t)) return true;
   return false;
 }
 
+// ✅ MEJORADO: Detección de incidentes más robusta
 function looksIncidentLike(text) {
   const t = norm(text);
-  if (t.length < 8) return false;
+  if (t.length < 6) return false;
+  
+  // 1) Contiene palabras clave de incidente
   if (containsAny(t, INCIDENT_HINTS)) return true;
-  // Heurística general: contiene "no" + verbo común
-  if (/no\s+(sirve|funciona|enciende|hay)\b/.test(t)) return true;
+  
+  // 2) Coincide con patrones de incidente
+  if (matchesAnyPattern(t, INCIDENT_PATTERNS)) return true;
+  
+  // 3) Tiene número de habitación (4 dígitos) + algo más
+  if (/\b\d{4}\b/.test(t) && t.length > 10) return true;
+  
   return false;
 }
 
-// NEW: smalltalk social tipo "como te va", "como estas", "que onda"
-function looksLikeSocialSmalltalk(text = '') {
+// ✅ NUEVO: Detectar si parece reporte de habitación
+function hasRoomNumber(text) {
   const t = norm(text);
-  if (!t) return false;
-  if (t.length > 80) return false; // cosas cortas / medianas
-
-  const socialRe = /^(como estas|como te va|que tal|que onda|como andas|qué tal|qué onda)\b/;
-
-  const hasGreeting = containsAny(t, GREETING_HINTS);
-  const isSocialQuestion = socialRe.test(t);
-  const isIncident = looksIncidentLike(text); // sobre texto crudo
-
-  return (hasGreeting || isSocialQuestion) && !isIncident;
+  return /\b\d{4}\b/.test(t);
 }
 
-// 🔹 NUEVO: ¿parece pregunta de estatus del ticket?
 function looksLikeStatusQuery(text = '') {
   const t = norm(text);
   if (!t) return false;
-  // Acotamos a mensajes relativamente cortos/medios
   if (t.length > 140) return false;
   return STATUS_QUERY_HINTS.some(h => t.includes(h));
 }
 
-// ¿Es DM (huésped/solicitante) o grupo (equipo)?
 function isGroupChatId(chatId = '') {
   return /@g\.us$/.test(String(chatId));
 }
 
-// ¿Parece feedback sobre ticket? (folio o reply con folio)
 function looksLikeTicketFeedback({ text, hasFolioInBody, hasQuotedFolio }) {
   if (hasFolioInBody || hasQuotedFolio) return true;
-  // También podemos considerar DMs cortos tipo "gracias, ya quedó" → requesterReply.js afina
   const t = norm(text);
-  if (t.length <= 60 && (t.includes('gracias') || t.includes('ya quedo') || t.includes('ya quedó'))) {
+  if (t.length <= 60 && (t.includes('gracias') || t.includes('ya quedo'))) {
     return true;
   }
   return false;
 }
 
-/**
- * Extrae señales básicas de un mensaje.
- */
 async function extractBasicSignals({ msg, text }) {
   const body = text || msg.body || '';
   const tNorm = norm(body);
-
   const chatId = msg.from || '';
   const isGroup = isGroupChatId(chatId);
-  const fromMe  = !!msg.fromMe;
+  const fromMe = !!msg.fromMe;
 
-  // FOLIO en el cuerpo
   const hasFolioInBody = FOLIO_RE.test(String(body).toUpperCase());
 
-  // FOLIO en mensaje citado (si aplica)
   let hasQuotedFolio = false;
   if (msg.hasQuotedMsg && typeof msg.getQuotedMessage === 'function') {
     try {
@@ -211,18 +169,16 @@ async function extractBasicSignals({ msg, text }) {
       if (quoted && FOLIO_RE.test(String(quoted.body || '').toUpperCase())) {
         hasQuotedFolio = true;
       }
-    } catch {
-      // ignoramos errores silenciosamente
-    }
+    } catch {}
   }
 
-  const isGreeting         = isShortGreeting(body);
-  const isCommand          = looksLikeCommand(body);
-  const isMetaBot          = looksLikeMetaBotQuestion(body);
-  const isHelpLike         = looksLikeHelpQuestion(body);
-  const isIncidentLike     = looksIncidentLike(body);
-  const isSocialSmalltalk  = looksLikeSocialSmalltalk(body);
-  const isStatusQuery      = looksLikeStatusQuery(body); // 🔹 NUEVO
+  const isGreeting = isShortGreeting(body);
+  const isCommand = looksLikeCommand(body);
+  const isMetaBot = looksLikeMetaBotQuestion(body);
+  const isHelpLike = looksLikeHelpQuestion(body);
+  const isIncidentLike = looksIncidentLike(body);
+  const isStatusQuery = looksLikeStatusQuery(body);
+  const hasRoom = hasRoomNumber(body);
 
   return {
     body,
@@ -237,36 +193,25 @@ async function extractBasicSignals({ msg, text }) {
     isMetaBot,
     isHelpLike,
     isIncidentLike,
-    isSocialSmalltalk,
-    isStatusQuery, // 🔹 NUEVO
+    isStatusQuery,
+    hasRoom,
   };
 }
 
 /**
- * Clasificador principal de intención.
- *
- * @param {Object} params
- * @param {Object} params.msg      - mensaje de whatsapp-web.js
- * @param {string} [params.text]   - texto ya extraído/limpio
- * @param {Object} [params.context]- banderas de contexto opcionales:
- *   - hasActiveNISession: bool
- *   - niMode: string ('ask_place','confirm',etc.)
- *   - isKnownStaff: bool
- *
- * Devuelve:
- *   {
- *     intent: 'command'|'ni_new'|'ni_turn'|'requester_feedback'|'team_feedback'|'smalltalk'|'help'|'unknown',
- *     target: 'commandRouter'|'routeIncomingNI'|'routeRequesterReply'|'routeTeamFeedback'|'smalltalkHandler'|null,
- *     confidence: number (0..1),
- *     reason: string,
- *     flags: {...}
- *   }
+ * ✅ ESTRATEGIA MEJORADA:
+ * - Comandos → commandRouter
+ * - Folios / feedback → routeRequesterReply o routeTeamFeedback
+ * - Saludos puros (sin problema) → smalltalk
+ * - Meta bot → smalltalk
+ * - Mensajes con número de habitación + contexto → N-I (prioridad alta)
+ * - Mensajes con indicios de problema → N-I
+ * - TODO LO DEMÁS en DM → N-I (por defecto)
  */
 async function classifyMessageIntent({ msg, text, context = {} }) {
   const signals = await extractBasicSignals({ msg, text });
   const {
     body,
-    tNorm,
     chatId,
     isGroup,
     fromMe,
@@ -277,19 +222,17 @@ async function classifyMessageIntent({ msg, text, context = {} }) {
     isMetaBot,
     isHelpLike,
     isIncidentLike,
-    isSocialSmalltalk,
-    isStatusQuery, // 🔹 NUEVO
+    isStatusQuery,
+    hasRoom,
   } = signals;
 
-  const { hasActiveNISession = false, niMode = null, isKnownStaff = false } = context;
+  const { hasActiveNISession = false } = context;
 
   if (DEBUG) {
     console.log('[INTENT] signals', {
       chatId,
       isGroup,
-      fromMe,
       hasActiveNISession,
-      niMode,
       hasFolioInBody,
       hasQuotedFolio,
       isGreeting,
@@ -297,13 +240,11 @@ async function classifyMessageIntent({ msg, text, context = {} }) {
       isMetaBot,
       isHelpLike,
       isIncidentLike,
-      isSocialSmalltalk,
-      isStatusQuery, // 🔹 NUEVO
-      tNorm
+      isStatusQuery,
+      hasRoom,
     });
   }
 
-  // 0) Mensajes propios del bot → normalmente ignorar en intent router
   if (fromMe) {
     return {
       intent: 'self_message',
@@ -325,7 +266,7 @@ async function classifyMessageIntent({ msg, text, context = {} }) {
     };
   }
 
-  // 2) Meta / ayuda / smalltalk
+  // 2) Meta / ayuda sobre el bot
   if (isMetaBot) {
     return {
       intent: 'smalltalk',
@@ -336,18 +277,30 @@ async function classifyMessageIntent({ msg, text, context = {} }) {
     };
   }
 
-  // 2.a) Mensajes tipo "ayuda" que claramente describen un problema en DM → N-I
-  if (isHelpLike && isIncidentLike && !isGroup) {
+  // ✅ PRIORIDAD ALTA: Mensaje con número de habitación → probablemente es reporte
+  if (!isGroup && hasRoom && body.length >= 15) {
+    return {
+      intent: 'ni_new',
+      target: 'routeIncomingNI',
+      confidence: 0.92,
+      reason: 'has_room_number_dm',
+      flags: { ...signals, hasRoom: true }
+    };
+  }
+
+  // ✅ Si tiene indicios claros de incidente → N-I
+  if (!isGroup && isIncidentLike) {
     return {
       intent: 'ni_new',
       target: 'routeIncomingNI',
       confidence: 0.9,
-      reason: 'help_incident_combo_dm',
-      flags: { ...signals, isHelp: true, forcedNiNew: true }
+      reason: 'incident_like_dm',
+      flags: { ...signals }
     };
   }
 
-  if (isHelpLike) {
+  // ✅ Ayuda general (sin problema específico, sin habitación)
+  if (isHelpLike && !isIncidentLike && !hasRoom) {
     return {
       intent: 'help',
       target: 'smalltalkHandler',
@@ -357,8 +310,8 @@ async function classifyMessageIntent({ msg, text, context = {} }) {
     };
   }
 
-  if (isGreeting && !isIncidentLike && !hasFolioInBody && !hasQuotedFolio) {
-    // Saludo corto sin señales de problema → smalltalk
+  // Saludos PUROS (sin folio, sin problema, sin habitación)
+  if (isGreeting && !isIncidentLike && !hasFolioInBody && !hasQuotedFolio && !hasRoom && body.length < 50) {
     return {
       intent: 'smalltalk',
       target: 'smalltalkHandler',
@@ -368,29 +321,27 @@ async function classifyMessageIntent({ msg, text, context = {} }) {
     };
   }
 
-  // 3) Feedback con folio (cuerpo o quoted)
+  // 3) Feedback con folio
   if (looksLikeTicketFeedback({ text: body, hasFolioInBody, hasQuotedFolio })) {
-    if (isGroup || isKnownStaff) {
-      // Grupo de staff → feedback del equipo
+    if (isGroup) {
       return {
         intent: 'team_feedback',
         target: 'routeTeamFeedback',
         confidence: 0.9,
-        reason: 'folio_or_ack_in_group',
+        reason: 'folio_in_group',
         flags: { ...signals }
       };
     }
-    // DM → feedback del solicitante
     return {
       intent: 'requester_feedback',
       target: 'routeRequesterReply',
       confidence: 0.9,
-      reason: 'folio_or_ack_in_dm',
+      reason: 'folio_in_dm',
       flags: { ...signals }
     };
   }
 
-  // 🔹 3.b) DM: pregunta de estatus SIN folio / SIN quoted → routeRequesterReply
+  // 4) Pregunta de estatus SIN folio → routeRequesterReply
   if (!isGroup && isStatusQuery && !hasFolioInBody && !hasQuotedFolio) {
     return {
       intent: 'requester_feedback',
@@ -401,7 +352,7 @@ async function classifyMessageIntent({ msg, text, context = {} }) {
     };
   }
 
-  // 4) Si ya hay sesión NI activa, casi seguro es un turno de N-I
+  // 5) Sesión N-I activa → N-I
   if (hasActiveNISession) {
     return {
       intent: 'ni_turn',
@@ -412,63 +363,29 @@ async function classifyMessageIntent({ msg, text, context = {} }) {
     };
   }
 
-  // 5) DMs con pinta de incidencia → nueva N-I
-  if (!isGroup && isIncidentLike) {
+  // ✅ DEFAULT: TODO DM que no sea saludo puro → N-I
+  if (!isGroup && body.length >= 8) {
     return {
       intent: 'ni_new',
       target: 'routeIncomingNI',
       confidence: 0.85,
-      reason: 'dm_incident_like',
+      reason: 'dm_default_to_ni',
       flags: { ...signals }
     };
   }
 
-  // 6) DMs más largos con signo de pregunta al final → probablemente pregunta / smalltalk
-  //    (si no caímos antes en status_query ni en meta/help)
-  if (!isGroup && /\?\s*$/.test(body) && body.length < 150) {
-    return {
-      intent: 'smalltalk',
-      target: 'smalltalkHandler',
-      confidence: 0.7,
-      reason: 'short_question_no_ticket',
-      flags: { ...signals }
-    };
-  }
-
-  // 6 bis) Smalltalk social sin signo de pregunta (como te va, como estas, que onda, etc.)
-  if (!isGroup && !hasFolioInBody && !hasQuotedFolio && isSocialSmalltalk) {
-    return {
-      intent: 'smalltalk',
-      target: 'smalltalkHandler',
-      confidence: 0.8,
-      reason: 'social_smalltalk',
-      flags: { ...signals }
-    };
-  }
-
-  // 7) En grupos sin folio: por defecto lo dejamos a otros routers (team smalltalk o ignorable)
-  if (isGroup && !hasFolioInBody && !hasQuotedFolio && !isIncidentLike) {
+  // 7) Grupos sin folio → ignorar o smalltalk
+  if (isGroup && !hasFolioInBody && !hasQuotedFolio) {
     return {
       intent: 'smalltalk',
       target: 'smalltalkHandler',
       confidence: 0.6,
-      reason: 'group_smalltalk_or_chatter',
+      reason: 'group_chatter',
       flags: { ...signals }
     };
   }
 
-  // 8) Fallback: DM con enunciado genérico → lo tratamos como UNKNOWN, no forzamos N-I
-  if (!isGroup && body.length >= 10 && !/\?\s*$/.test(body)) {
-    return {
-      intent: 'unknown',
-      target: 'unknownHandler',
-      confidence: 0.6,
-      reason: 'dm_generic_statement_unknown_fallback',
-      flags: { ...signals, forcedUnknown: true }
-    };
-  }
-
-  // 9) Último recurso: unknown
+  // 8) Fallback
   return {
     intent: 'unknown',
     target: null,
