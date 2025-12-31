@@ -2952,7 +2952,7 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
     // Opción: cancelar
     if (/^cancelar?\b/i.test(t) || isNo(text)) {
       s._multipleTickets = null;
-      resetSession(s);
+      resetSession(s.chatId);
       await replySafe(msg, '🗑️ Ambos tickets descartados.');
       return;
     }
@@ -3030,7 +3030,49 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
       }
       return;
     }
-    
+
+    // Cambio de área por lenguaje natural
+    // Detectar patrones como: "es para sistemas", "envíalo a mantenimiento", etc.
+    const areaChangePatterns = [
+      /^(?:es\s+para|envialo?\s+a|mand[aá]lo?\s+a|cambialo?\s+a|es\s+de)\s+(.+)/i,
+      /^(?:área|area)\s+(.+)/i
+    ];
+
+    let areaCandidate = null;
+    for (const pattern of areaChangePatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        areaCandidate = match[1].trim();
+        break;
+      }
+    }
+
+    // También considerar si es una palabra corta (probablemente el nombre del área sola)
+    if (!areaCandidate && text.length <= 20 && text.split(/\s+/).length <= 2) {
+      areaCandidate = text.trim();
+    }
+
+    if (areaCandidate) {
+      const { normalizeAreaInput } = require('../ai/areaDetector');
+      const normalizedArea = normalizeAreaInput(areaCandidate);
+
+      if (normalizedArea) {
+        setDraftField(s, 'area_destino', normalizedArea);
+        addArea(s, normalizedArea);
+
+        const areaNames = {
+          'it': 'IT/Sistemas',
+          'man': 'Mantenimiento',
+          'ama': 'Ama de llaves',
+          'seg': 'Seguridad',
+          'rs': 'Room Service'
+        };
+
+        await replySafe(msg, `✅ Área actualizada a *${areaNames[normalizedArea] || normalizedArea.toUpperCase()}*\n\nEscribe *listo* para terminar o sigue editando.`);
+        return;
+      }
+    }
+
     // Cualquier otro texto es nueva descripción
     if (text.length >= 5) {
       s.draft.descripcion = text;
