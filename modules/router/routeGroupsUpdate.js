@@ -127,10 +127,22 @@ function actorKey(msg) {
 }
 
 function parseFoliosFromText(text = '') {
-  const rx = /\b([A-Z]{2,5}-\d{3,6})\b/gi;
+  // ✅ Buscar folios con formato PREFIJO-NNN (permite emojis antes)
+  // Formatos válidos: MAN-007, IT-001, AMA-123, SEG-01, etc.
+  const rx = /(?:^|[^\w])([A-Z]{2,5}-\d{2,6})\b/gi;
   const out = [];
   let m;
   while ((m = rx.exec(text))) out.push(m[1].toUpperCase());
+  
+  // También buscar con formato alternativo (por si hay espacios)
+  const rx2 = /\b([A-Z]{2,5})\s*-\s*(\d{2,6})\b/gi;
+  while ((m = rx2.exec(text))) {
+    const folio = `${m[1].toUpperCase()}-${m[2]}`;
+    if (!out.includes(folio)) out.push(folio);
+  }
+  
+  if (DEBUG && out.length) console.log('[GROUP-UPDATE] parsed folios', { text: text.substring(0, 50), folios: out });
+  
   return Array.from(new Set(out));
 }
 
@@ -175,7 +187,6 @@ function loadUsersCache() {
       const data = fs.readFileSync(fullPath, 'utf8');
       usersCache = JSON.parse(data);
       usersCacheTime = now;
-      if (DEBUG) console.log('[GROUP-UPDATE] users.json loaded', { count: Object.keys(usersCache).length });
     }
   } catch (e) {
     if (DEBUG) console.warn('[GROUP-UPDATE] loadUsersCache err:', e?.message);
@@ -184,19 +195,13 @@ function loadUsersCache() {
   return usersCache || {};
 }
 
-/**
- * Busca un usuario por su ID (puede ser @c.us o @lid)
- * Intenta hacer match por los últimos 10 dígitos del número
- */
 function findUserByPhone(phoneId) {
   const users = loadUsersCache();
   if (!users || !phoneId) return null;
   
-  // Extraer solo los dígitos del ID
   const digits = String(phoneId).replace(/\D/g, '');
   if (digits.length < 10) return null;
   
-  // Usar los últimos 10-12 dígitos para comparar
   const suffix = digits.slice(-12);
   
   for (const [userId, userData] of Object.entries(users)) {
@@ -206,7 +211,6 @@ function findUserByPhone(phoneId) {
     }
   }
   
-  // Intento más flexible: últimos 10 dígitos
   const shortSuffix = digits.slice(-10);
   for (const [userId, userData] of Object.entries(users)) {
     const userDigits = String(userId).replace(/\D/g, '');
@@ -218,71 +222,38 @@ function findUserByPhone(phoneId) {
   return null;
 }
 
-/**
- * Resuelve el nombre del autor del mensaje
- * Prioridad: msg._data > users.json > fallback
- */
 async function resolveAuthorName(msg, client) {
   const authorId = msg.author || msg.from;
   let realPhoneId = null;
-  let notifyName = null;  // Nombre de notificación de WhatsApp
+  let notifyName = null;
   
-  // ══════════════════════════════════════════════════════════════
-  // ESTRATEGIA 0: Obtener notifyName directamente (más confiable en v1.34)
-  // ══════════════════════════════════════════════════════════════
   try {
     const rawData = msg._data || msg.rawData || {};
-    
-    // notifyName es el nombre que el usuario tiene configurado en WhatsApp
-    if (rawData.notifyName && typeof rawData.notifyName === 'string') {
-      notifyName = rawData.notifyName.trim();
-      if (DEBUG) console.log('[GROUP-UPDATE] found notifyName:', notifyName);
-    }
-    
-    // También buscar en otras propiedades
-    if (!notifyName && rawData.pushname) {
-      notifyName = rawData.pushname.trim();
-    }
-    if (!notifyName && msg.pushname) {
-      notifyName = msg.pushname.trim();
-    }
-  } catch (e) {
-    // Ignorar
-  }
+    if (rawData.notifyName) notifyName = rawData.notifyName.trim();
+    if (!notifyName && rawData.pushname) notifyName = rawData.pushname.trim();
+    if (!notifyName && msg.pushname) notifyName = msg.pushname.trim();
+  } catch {}
   
-  // ══════════════════════════════════════════════════════════════
-  // ESTRATEGIA 1: Extraer número de msg._data (datos internos de WA)
-  // ══════════════════════════════════════════════════════════════
   try {
     const rawData = msg._data || msg.rawData || {};
-    
-    // Buscar en diferentes lugares donde puede estar el número
     const possibleSources = [
-      rawData.author,                    // Puede ser string o objeto
-      rawData.from,
-      rawData.sender?.id,
-      rawData.sender?.user,
-      rawData.participant,               // En grupos
+      rawData.author, rawData.from, rawData.sender?.id, rawData.sender?.user, rawData.participant
     ];
     
     for (const source of possibleSources) {
       if (!source) continue;
-      
       let phoneCandidate = null;
       
       if (typeof source === 'string') {
-        // Si contiene @c.us, es un número válido
         if (source.includes('@c.us') || source.includes('@s.whatsapp.net')) {
           phoneCandidate = source.replace('@s.whatsapp.net', '@c.us');
         } else if (!source.includes('@lid')) {
-          // Puede ser solo el número (no @lid)
           const digits = source.replace(/\D/g, '');
           if (digits.length >= 10 && digits.length <= 15) {
             phoneCandidate = digits + '@c.us';
           }
         }
       } else if (typeof source === 'object') {
-        // Es un objeto con .user o ._serialized
         if (source.user && !String(source.user).includes('@lid')) {
           phoneCandidate = source.user + '@c.us';
         } else if (source._serialized && source._serialized.includes('@c.us')) {
@@ -292,147 +263,32 @@ async function resolveAuthorName(msg, client) {
       
       if (phoneCandidate && !phoneCandidate.includes('@lid')) {
         realPhoneId = phoneCandidate;
-        if (DEBUG) console.log('[GROUP-UPDATE] found phone in msg._data', { 
-          source: typeof source === 'string' ? source.substring(0, 20) : 'object',
-          phone: realPhoneId 
-        });
         break;
       }
     }
-    
-    // También revisar el id del autor directamente
-    if (!realPhoneId && rawData.id) {
-      const idData = rawData.id;
-      if (idData.participant) {
-        const participant = idData.participant;
-        if (typeof participant === 'string' && participant.includes('@c.us')) {
-          realPhoneId = participant;
-        } else if (participant.user) {
-          realPhoneId = participant.user + '@c.us';
-        } else if (participant._serialized && !participant._serialized.includes('@lid')) {
-          realPhoneId = participant._serialized;
-        }
-      }
-    }
-    
-  } catch (e) {
-    if (DEBUG) console.warn('[GROUP-UPDATE] msg._data extraction failed:', e?.message);
-  }
+  } catch {}
   
-  // ══════════════════════════════════════════════════════════════
-  // ESTRATEGIA 2: Obtener participantes del chat y buscar por notifyName
-  // ══════════════════════════════════════════════════════════════
-  if (client && authorId?.includes('@lid')) {
-    try {
-      const chat = await msg.getChat();
-      if (chat && Array.isArray(chat.participants)) {
-        // Listar todos los participantes para debug
-        if (DEBUG) {
-          const parts = chat.participants.map(p => ({
-            user: p.id?.user,
-            serialized: p.id?._serialized
-          }));
-          console.log('[GROUP-UPDATE] group participants sample:', parts.slice(0, 3));
-        }
-        
-        // Buscar participantes que estén en users.json
-        for (const participant of chat.participants) {
-          if (participant.id?.user) {
-            const testPhone = participant.id.user + '@c.us';
-            const userMatch = findUserByPhone(testPhone);
-            
-            if (userMatch) {
-              const userName = userMatch.nombre || userMatch.name || '';
-              
-              // Comparar con notifyName para confirmar que es el autor
-              if (notifyName) {
-                const notifyLower = notifyName.toLowerCase();
-                const userLower = userName.toLowerCase();
-                const userFirstName = userLower.split(' ')[0];
-                const userLastName = userLower.split(' ').slice(-1)[0];
-                
-                // Match si notifyName contiene nombre o apellido
-                if (notifyLower.includes(userFirstName) || 
-                    notifyLower.includes(userLastName) ||
-                    userLower.includes(notifyLower.split(' ')[0])) {
-                  if (DEBUG) console.log('[GROUP-UPDATE] matched participant to users.json via notifyName', { 
-                    notifyName, 
-                    userName,
-                    phone: testPhone 
-                  });
-                  return { name: userName, cargo: userMatch.cargo, source: 'users.json_participant_match' };
-                }
-              }
-              
-              // Si no hay notifyName pero el participante está en users.json, guardarlo como candidato
-              if (!realPhoneId) {
-                realPhoneId = testPhone;
-                if (DEBUG) console.log('[GROUP-UPDATE] potential author from participants:', testPhone);
-              }
-            }
-          }
-        }
-      }
-    } catch (e) {
-      if (DEBUG) console.warn('[GROUP-UPDATE] getChat failed:', e?.message);
-    }
-  }
-  
-  // ══════════════════════════════════════════════════════════════
-  // ESTRATEGIA 3: Buscar en users.json con el número encontrado
-  // ══════════════════════════════════════════════════════════════
   if (realPhoneId) {
     const userFromCache = findUserByPhone(realPhoneId);
     if (userFromCache) {
       const name = userFromCache.nombre || userFromCache.name;
       const cargo = userFromCache.cargo;
-      if (DEBUG) console.log('[GROUP-UPDATE] author from users.json', { name, cargo, phone: realPhoneId });
       return { name, cargo, source: 'users.json' };
     }
   }
   
-  // ══════════════════════════════════════════════════════════════
-  // ESTRATEGIA 4: Usar client.getContactById si tenemos número
-  // ══════════════════════════════════════════════════════════════
-  if (client && realPhoneId) {
-    try {
-      const contact = await client.getContactById(realPhoneId);
-      if (contact) {
-        const name = contact.pushname || contact.name || contact.number;
-        if (name) {
-          if (DEBUG) console.log('[GROUP-UPDATE] author from getContactById', { name });
-          return { name, cargo: null, source: 'wa_contact' };
-        }
-      }
-    } catch (e) {
-      if (DEBUG) console.warn('[GROUP-UPDATE] getContactById failed:', e?.message);
-    }
-  }
-  
-  // ══════════════════════════════════════════════════════════════
-  // ESTRATEGIA 5: Usar notifyName si lo tenemos
-  // ══════════════════════════════════════════════════════════════
   if (notifyName) {
-    // Intentar buscar en users.json por nombre
     const users = loadUsersCache();
     for (const [userId, userData] of Object.entries(users)) {
       const userName = userData.nombre || userData.name || '';
-      // Comparar nombres (ignorando mayúsculas y acentos básicos)
       if (userName.toLowerCase().includes(notifyName.toLowerCase()) ||
           notifyName.toLowerCase().includes(userName.toLowerCase().split(' ')[0])) {
-        if (DEBUG) console.log('[GROUP-UPDATE] matched notifyName to user', { notifyName, userName });
         return { name: userName, cargo: userData.cargo, source: 'notifyName_match' };
       }
     }
-    
-    // Usar notifyName directamente
-    if (DEBUG) console.log('[GROUP-UPDATE] using notifyName as author:', notifyName);
     return { name: notifyName, cargo: null, source: 'notifyName' };
   }
   
-  // ══════════════════════════════════════════════════════════════
-  // FALLBACK: Usar número parcial o "Equipo"
-  // ══════════════════════════════════════════════════════════════
   if (realPhoneId && !realPhoneId.includes('@lid')) {
     const num = String(realPhoneId).replace(/@.*$/, '').replace(/\D/g, '');
     if (num.length >= 10) {
@@ -443,17 +299,10 @@ async function resolveAuthorName(msg, client) {
   return { name: 'Equipo', cargo: null, source: 'default' };
 }
 
-/**
- * Formatea el nombre del autor para mostrar
- * Si tiene cargo, lo incluye
- */
 function formatAuthorDisplay(authorInfo) {
   if (!authorInfo) return 'Técnico';
-  
   const { name, cargo } = authorInfo;
-  if (cargo) {
-    return `${name} (${cargo})`;
-  }
+  if (cargo) return `${name} (${cargo})`;
   return name || 'Técnico';
 }
 
@@ -461,7 +310,7 @@ function formatAuthorDisplay(authorInfo) {
 // Sesiones de desambiguación/confirmación (in-memory)
 // ──────────────────────────────────────────────────────────────
 const SESSIONS = new Map();
-const SESSION_TTL_MS = parseInt(process.env.VICEBOT_GROUP_SESSION_TTL_MS || '480000', 10); // 8 min
+const SESSION_TTL_MS = parseInt(process.env.VICEBOT_GROUP_SESSION_TTL_MS || '480000', 10);
 
 function setSession(key, data) {
   SESSIONS.set(key, { ...data, expiresAt: Date.now() + SESSION_TTL_MS });
@@ -506,8 +355,6 @@ async function classifyIntent(msg) {
 // ──────────────────────────────────────────────────────────────
 // Notificar al solicitante
 // ──────────────────────────────────────────────────────────────
-
-// Cache de requester (si existe el módulo)
 let getRequesterForIncident = null;
 try {
   const mod = require('../state/lastGroupDispatch');
@@ -519,7 +366,6 @@ try {
 function extractRequesterChatId(incident) {
   if (!incident) return null;
   
-  // Buscar en múltiples campos posibles
   const candidates = [
     incident.chat_id,
     incident.chatId,
@@ -540,10 +386,8 @@ function extractRequesterChatId(incident) {
 }
 
 async function notifyRequester(client, msg, incident, newStatus) {
-  // Intentar obtener el chat_id del solicitante de múltiples fuentes
   let requesterChatId = extractRequesterChatId(incident);
   
-  // Fallback: buscar en el cache de dispatch
   if (!requesterChatId && getRequesterForIncident) {
     try {
       requesterChatId = getRequesterForIncident(incident.id);
@@ -618,7 +462,6 @@ async function tryUpdateByFolio(client, msg, newStatus) {
         continue;
       }
 
-      // Actualizar estado
       if (newStatus === 'canceled') {
         await closeIncident(inc.id, {
           reason: 'group_cancel_by_folio',
@@ -630,7 +473,6 @@ async function tryUpdateByFolio(client, msg, newStatus) {
         await updateIncidentStatus(inc.id, newStatus);
       }
 
-      // Registrar evento
       await appendIncidentEvent(inc.id, {
         event_type: 'group_status_update',
         wa_msg_id: msg.id?._serialized || null,
@@ -642,9 +484,7 @@ async function tryUpdateByFolio(client, msg, newStatus) {
         }
       });
 
-      // Notificar al solicitante
       await notifyRequester(client, msg, inc, newStatus);
-
       results.push({ folio, ok: true, incident: inc });
     } catch (e) {
       if (DEBUG) console.warn('[GROUP-UPDATE] by folio err', folio, e?.message || e);
@@ -652,7 +492,6 @@ async function tryUpdateByFolio(client, msg, newStatus) {
     }
   }
 
-  // Mensaje de confirmación
   const oks = results.filter(r => r.ok).map(r => r.folio);
   const fails = results.filter(r => !r.ok).map(r => `${r.folio} (${r.reason})`);
 
@@ -682,13 +521,23 @@ async function tryUpdateByQuotedMessage(client, msg, newStatus) {
     const quoted = await msg.getQuotedMessage();
     const quotedBody = quoted?.body || '';
     
+    if (DEBUG) console.log('[GROUP-UPDATE] quoted message body:', quotedBody.substring(0, 100));
+    
     const folios = parseFoliosFromText(quotedBody);
-    if (!folios.length) return null;
+    if (!folios.length) {
+      if (DEBUG) console.log('[GROUP-UPDATE] no folio found in quoted message');
+      return null;
+    }
 
     const folio = folios[0];
+    if (DEBUG) console.log('[GROUP-UPDATE] found folio in quote:', folio);
+    
     const inc = await getIncidentByFolio(folio);
     
-    if (!inc) return null;
+    if (!inc) {
+      if (DEBUG) console.log('[GROUP-UPDATE] incident not found for folio:', folio);
+      return null;
+    }
     
     const currentStatus = String(inc.status || '').toLowerCase();
     if (currentStatus === 'done' || currentStatus === 'closed' || currentStatus === 'canceled') {
@@ -696,7 +545,6 @@ async function tryUpdateByQuotedMessage(client, msg, newStatus) {
       return { handled: true };
     }
 
-    // Actualizar estado
     if (newStatus === 'canceled') {
       await closeIncident(inc.id, {
         reason: 'group_cancel_by_reply',
@@ -708,7 +556,6 @@ async function tryUpdateByQuotedMessage(client, msg, newStatus) {
       await updateIncidentStatus(inc.id, newStatus);
     }
 
-    // Registrar evento
     await appendIncidentEvent(inc.id, {
       event_type: 'group_status_update',
       wa_msg_id: msg.id?._serialized || null,
@@ -720,7 +567,6 @@ async function tryUpdateByQuotedMessage(client, msg, newStatus) {
       }
     });
 
-    // Notificar al solicitante
     await notifyRequester(client, msg, inc, newStatus);
 
     const statusEmoji = newStatus === 'done' ? '✅' : 
@@ -737,16 +583,11 @@ async function tryUpdateByQuotedMessage(client, msg, newStatus) {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Buscar ticket reciente para este grupo (sin folio explícito)
-// Lógica:
-// - Si hay 1 ticket en últimos 10 min → usar automáticamente
-// - Si hay múltiples en últimos 10 min → menú de selección
-// - Si pasaron >10 min → menú de selección con todos los abiertos
+// Buscar ticket reciente para este grupo
 // ──────────────────────────────────────────────────────────────
 const AUTO_SELECT_WINDOW_MINS = parseInt(process.env.VICEBOT_GROUP_AUTO_WINDOW_MINS || '10', 10);
 
 async function tryUpdateRecentTicket(client, msg, newStatus) {
-  // 1. Buscar tickets recientes (últimos 10 min)
   let recentCandidates = [];
   try {
     recentCandidates = await listOpenIncidentsRecentlyDispatchedToGroup(msg.from, {
@@ -757,7 +598,6 @@ async function tryUpdateRecentTicket(client, msg, newStatus) {
     if (DEBUG) console.warn('[GROUP-UPDATE] recent query err', e?.message || e);
   }
 
-  // Deduplicar
   const dedup = (list) => {
     const seen = new Set();
     return (list || []).filter(x => {
@@ -771,7 +611,6 @@ async function tryUpdateRecentTicket(client, msg, newStatus) {
 
   recentCandidates = dedup(recentCandidates);
 
-  // 2. Si hay exactamente 1 ticket reciente → usar automáticamente
   if (recentCandidates.length === 1) {
     const inc = recentCandidates[0];
     
@@ -780,7 +619,6 @@ async function tryUpdateRecentTicket(client, msg, newStatus) {
       windowMins: AUTO_SELECT_WINDOW_MINS 
     });
 
-    // Para cancelación, siempre pedir confirmación
     if (newStatus === 'canceled') {
       const key = actorKey(msg);
       setSession(key, { kind: 'confirm_cancel', incident: inc, newStatus });
@@ -794,11 +632,9 @@ async function tryUpdateRecentTicket(client, msg, newStatus) {
       return { handled: true, awaitingConfirmation: true };
     }
 
-    // Para done/in_progress, actualizar directamente
     return await updateTicketAndNotify(client, msg, inc, newStatus, 'auto_recent');
   }
 
-  // 3. Si hay múltiples tickets recientes → menú
   if (recentCandidates.length > 1) {
     if (DEBUG) console.log('[GROUP-UPDATE] multiple recent tickets', { 
       count: recentCandidates.length 
@@ -806,18 +642,16 @@ async function tryUpdateRecentTicket(client, msg, newStatus) {
     return await showSelectionMenu(client, msg, recentCandidates, newStatus);
   }
 
-  // 4. No hay tickets recientes → buscar todos los abiertos (ventana amplia)
   let allCandidates = [];
   try {
     allCandidates = await listOpenIncidentsRecentlyDispatchedToGroup(msg.from, {
-      windowMins: parseInt(process.env.VICEBOT_GROUP_WINDOW_MINS || '4320', 10), // 72h
+      windowMins: parseInt(process.env.VICEBOT_GROUP_WINDOW_MINS || '4320', 10),
       limit: 20
     });
   } catch (e) {
     if (DEBUG) console.warn('[GROUP-UPDATE] extended query err', e?.message || e);
   }
 
-  // Fallback: buscar por área
   if (!Array.isArray(allCandidates) || !allCandidates.length) {
     try {
       const cfg = await loadGroupsConfig();
@@ -835,19 +669,15 @@ async function tryUpdateRecentTicket(client, msg, newStatus) {
   allCandidates = dedup(allCandidates);
 
   if (!allCandidates.length) {
-    return null; // No hay tickets, ignorar
+    return null;
   }
 
-  // 5. Mostrar menú de selección (pasaron >10 min o hay múltiples)
   if (DEBUG) console.log('[GROUP-UPDATE] showing menu (>10min or multiple)', { 
     count: allCandidates.length 
   });
   return await showSelectionMenu(client, msg, allCandidates, newStatus);
 }
 
-/**
- * Actualiza el ticket y notifica al solicitante
- */
 async function updateTicketAndNotify(client, msg, inc, newStatus, source) {
   try {
     if (newStatus === 'canceled') {
@@ -887,18 +717,14 @@ async function updateTicketAndNotify(client, msg, inc, newStatus, source) {
   }
 }
 
-/**
- * Muestra menú de selección por números
- */
 async function showSelectionMenu(client, msg, candidates, newStatus) {
   const key = actorKey(msg);
-  setSession(key, { kind: 'disambiguate', candidates, newStatus });
+  setSession(key, { kind: 'disambiguate', candidates, newStatus, originalMessage: msg.body });
 
   const statusAction = newStatus === 'done' ? 'marcar como *completado*' : 
                        newStatus === 'in_progress' ? 'marcar *en progreso*' : 
                        '*cancelar*';
 
-  // Formato: número) folio — lugar — "descripción corta"
   const lines = candidates.slice(0, 8).map((c, i) => {
     const lugar = c.lugar || '—';
     const desc = (c.descripcion || '').trim();
@@ -923,7 +749,7 @@ async function showSelectionMenu(client, msg, candidates, newStatus) {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Manejo de sesiones (desambiguación y confirmación)
+// Manejo de sesiones
 // ──────────────────────────────────────────────────────────────
 async function maybeHandleSessionResponse(client, msg) {
   const key = actorKey(msg);
@@ -932,7 +758,6 @@ async function maybeHandleSessionResponse(client, msg) {
 
   const text = (msg.body || '').trim();
 
-  // Confirmación de cancelación (1 ticket)
   if (s.kind === 'confirm_cancel' && s.incident) {
     if (isYes(text)) {
       clearSession(key);
@@ -970,30 +795,13 @@ async function maybeHandleSessionResponse(client, msg) {
     return true;
   }
 
-  // Desambiguación (múltiples tickets)
   if (s.kind === 'disambiguate' && Array.isArray(s.candidates)) {
-    
-    // ✅ NUEVO: Detectar si el usuario quiere cancelar/salir del flujo
     const cancelPatterns = [
-      /^no$/i,
-      /^cancelar?$/i,
-      /^salir$/i,
-      /^nada$/i,
-      /^ninguno$/i,
-      /^olvidalo$/i,
-      /^olvídalo$/i,
-      /^dejalo$/i,
-      /^déjalo$/i,
-      /^ya\s+no$/i,
-      /^no\s+quiero/i,
-      /^no\s+gracias/i,
-      /^no\s+es\s+ninguno/i,
-      /^ninguno\s+de\s+esos/i,
-      /^me\s+equivoqu[eé]/i,
-      /^error$/i,
-      /^stop$/i,
-      /^x$/i,
-      /^0$/,
+      /^no$/i, /^cancelar?$/i, /^salir$/i, /^nada$/i, /^ninguno$/i,
+      /^olvidalo$/i, /^olvídalo$/i, /^dejalo$/i, /^déjalo$/i,
+      /^ya\s+no$/i, /^no\s+quiero/i, /^no\s+gracias/i,
+      /^ninguno\s+de\s+esos/i, /^me\s+equivoqu[eé]/i,
+      /^error$/i, /^stop$/i, /^x$/i, /^0$/,
     ];
     
     if (cancelPatterns.some(rx => rx.test(text))) {
@@ -1002,7 +810,6 @@ async function maybeHandleSessionResponse(client, msg) {
       return true;
     }
 
-    // Aceptar número o folio
     const numMatch = text.match(/^\s*(\d{1,2})\s*$/);
     const folios = parseFoliosFromText(text);
     
@@ -1016,7 +823,6 @@ async function maybeHandleSessionResponse(client, msg) {
         return true;
       }
     } else if (folios.length) {
-      // Buscar por folio en los candidatos
       const folioUpper = folios[0].toUpperCase();
       cand = s.candidates.find(c => (c.folio || '').toUpperCase() === folioUpper);
       if (!cand) {
@@ -1024,13 +830,15 @@ async function maybeHandleSessionResponse(client, msg) {
         return true;
       }
     } else {
-      // ✅ MEJORADO: Mensaje más amigable con opción de salir
       await safeReply(client, msg, 'Responde con el *número* del ticket (ej: 1) o di *cancelar* si no quieres continuar.');
       return true;
     }
 
     clearSession(key);
-    return await updateTicketAndNotify(client, msg, cand, s.newStatus, 'disambiguation');
+    
+    // ✅ FIX: Usar el mensaje original guardado en la sesión para notificar
+    const originalMsg = { ...msg, body: s.originalMessage || msg.body };
+    return await updateTicketAndNotify(client, originalMsg, cand, s.newStatus, 'disambiguation');
   }
 
   return false;
@@ -1043,41 +851,31 @@ async function maybeHandleGroupCancel(client, msg) {
   if (!isGroupId(msg.from)) return false;
   if (msg.fromMe) return false;
 
-  // 1. Verificar si hay una sesión activa esperando respuesta
   const handledBySession = await maybeHandleSessionResponse(client, msg);
   if (handledBySession) return true;
 
-  // 2. Clasificar intención
   const intent = await classifyIntent(msg);
   if (!intent || !intent.status) return false;
 
   if (DEBUG) console.log('[GROUP-UPDATE] detected intent', intent);
 
-  // 3. Intentar por folio explícito
   const folioRes = await tryUpdateByFolio(client, msg, intent.status);
   if (folioRes?.handled) return true;
 
-  // 4. Intentar por mensaje citado
   const quotedRes = await tryUpdateByQuotedMessage(client, msg, intent.status);
   if (quotedRes?.handled) return true;
 
-  // 5. Buscar ticket reciente (puede iniciar desambiguación)
   const recentRes = await tryUpdateRecentTicket(client, msg, intent.status);
   if (recentRes?.handled) return true;
 
-  // 6. No se encontró ticket
   const statusAction = intent.status === 'done' ? 'marcar como completado' : 
                        intent.status === 'in_progress' ? 'marcar en progreso' : 
                        'cancelar';
-  await safeReply(client, msg, `¿Cuál ticket quieres ${statusAction}? Indica el *folio* (ej. SYS-00006)`);
+  await safeReply(client, msg, `¿Cuál ticket quieres ${statusAction}? Indica el *folio* (ej. MAN-007)`);
   return true;
 }
 
-/**
- * Placeholder para feedback del equipo (no actualizaciones de estado)
- */
 async function maybeHandleTeamFeedback(client, msg) {
-  // Por ahora no hacemos nada especial con feedback general
   return false;
 }
 
@@ -1085,7 +883,6 @@ module.exports = {
   maybeHandleGroupCancel,
   maybeHandleTeamFeedback,
   maybeHandleSessionResponse,
-  // Exports para testing
   rewriteUpdateMessage,
   notifyRequester,
 };

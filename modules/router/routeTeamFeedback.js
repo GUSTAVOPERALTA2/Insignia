@@ -306,6 +306,24 @@ async function safeReply(client, msg, text) {
 // ──────────────────────────────────────────────────────────────
 // ENTRY POINT
 // ──────────────────────────────────────────────────────────────
+
+// ✅ NUEVO: Patrones que indican actualización de estado (no feedback)
+const statusUpdatePatterns = [
+  // T-L (completado)
+  /^\s*(completar?|completad[oa]|terminad?|terminad[oa]|list[oa]|hecho|resuelto|arreglad[oa])\s*$/i,
+  /^\s*(completar?|terminar?|cerrar)\s+\d+\s*$/i,
+  /\b(ya\s+)?qued[oó]\b/i,
+  // T-P (en progreso)
+  /^\s*(voy|vamos|enterado|en\s+camino)\s*$/i,
+  // T-C (cancelar)
+  /^\s*(cancelar?|cancela|cancelad[oa])\s*$/i,
+];
+
+function looksLikeStatusUpdate(text) {
+  const t = (text || '').trim();
+  return statusUpdatePatterns.some(rx => rx.test(t));
+}
+
 async function maybeHandleTeamFeedback(client, msg) {
   // Solo grupos
   if (!isGroupId(msg.from)) return false;
@@ -326,6 +344,12 @@ async function maybeHandleTeamFeedback(client, msg) {
   if (!hasMedia && !hasQuoted) {
     // Mensaje de texto simple sin citar → NO procesamos aquí
     // Lo manejará routeGroupsUpdate con su lógica de auto-selección
+    return false;
+  }
+
+  // ✅ NUEVO: Si parece actualización de estado, dejarlo para routeGroupsUpdate
+  if (!hasMedia && hasQuoted && looksLikeStatusUpdate(body)) {
+    if (DEBUG) console.log('[TEAMFB] skipping - looks like status update', { body: body.substring(0, 30) });
     return false;
   }
 

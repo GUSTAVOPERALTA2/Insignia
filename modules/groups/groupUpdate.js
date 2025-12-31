@@ -4,29 +4,55 @@
 
 const ENABLE_LLM = !!process.env.OPENAI_API_KEY;
 
-// ----- 0) Normalización ligera -------------------
+// ----- 0) Normalización -------------------
 function norm(text = '') {
   return String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // Quitar acentos
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 // ✅ NUEVO: Patrones que indican CONSULTA (no actualización de estado)
+// NOTA: "completar" sin más contexto es ACCIÓN, no consulta
 const queryPatterns = [
+  // "tareas/tickets + estado" = consulta
   /\b(tareas?|tickets?)\s+(pendientes?|abiertos?|completad[ao]s?|cerrad[ao]s?|cancelad[ao]s?)\b/i,
+  // "estado + de + área/fecha" = consulta  
   /\b(pendientes?|abiertos?|completad[ao]s?|cerrad[ao]s?)\s+(de\s+)?(hoy|ayer|man|it|ama|seg)/i,
-  /\b(muestr[ae]|ver|mostrar|listar|consultar|buscar)\s+(tareas?|tickets?)/i,
+  // Verbos de consulta + tareas
+  /\b(muestr[ae]|ver|mostrar|listar|consultar|buscar)\s+(las?\s+)?(tareas?|tickets?)/i,
+  // "mis/nuestras tareas" = consulta
   /\b(mis|nuestras?)\s+(tareas?|tickets?)/i,
+  // Preguntas
   /\b(cuantos?|cuántos?|cuales|cuáles)\s+(tickets?|tareas?)/i,
   /\b(que|qué)\s+(hay|tenemos)\s+(de|pendiente)/i,
-  /^tareas?\s*$/i,  // Solo "tareas" es consulta, no actualización
-  /^tickets?\s*$/i, // Solo "tickets" es consulta
-  /\bdetalle\s+[A-Z]{2,}-\d+/i,  // "detalle MAN-001"
-  /^[A-Z]{2,}-\d+\s*$/i,  // Solo un folio sin contexto = probablemente consulta
+  // Solo "tareas" o "tickets" sin acción = consulta
+  /^tareas?\s*$/i,
+  /^tickets?\s*$/i,
+  // "detalle FOLIO" = consulta
+  /\bdetalle\s+[A-Z]{2,}-\d+/i,
+];
+
+// Patrones que parecen consulta pero son ACCIÓN
+const actionPatterns = [
+  /^\s*completar?\s*$/i,           // "completar" solo = acción
+  /^\s*completar\s+\d+/i,          // "completar 1" = acción
+  /^\s*completar\s+tarea/i,        // "completar tarea" = acción
+  /^\s*terminar?\s*$/i,            // "terminar" = acción
+  /^\s*terminar\s+\d+/i,           // "terminar 1" = acción
+  /^\s*cerrar\s+\d+/i,             // "cerrar 1" = acción
+  /^\s*marcar\s+(como\s+)?/i,      // "marcar como listo" = acción
 ];
 
 function isQueryMessage(text) {
   const t = norm(text);
+  
+  // Primero verificar si es una acción explícita
+  if (actionPatterns.some(rx => rx.test(t))) {
+    return false;
+  }
+  
   return queryPatterns.some(rx => rx.test(t));
 }
 
@@ -40,14 +66,28 @@ const negations = [
 ];
 
 const rx = {
-  // Terminada (T-L)
+  // Terminada (T-L) - AMPLIADO con "completar" y "queda funcionando"
   done: [
-    /\b(ya\s+)?qued[oó]\b/i,
+    /\b(ya\s+)?quedo\b/i,
     /\b(resuelto|solucionad[oa]|arreglad[oa]|corregid[oa]|restaurad[oa]|list[oa])\b/i,
     /\b(terminad[oa]|finalizad[oa]|cerrad[oa])\b/i,
-    /\b(ya\s+est[aá])\b/i,
-    /\b(qued[oó]\s+list[oa])\b/i,
+    /\b(ya\s+esta)\b/i,
+    /\b(quedo\s+list[oa])\b/i,
     /\bhecho\b/i,
+    /\bcompletar?\b/i,
+    /\bcompletad[oa]\b/i,
+    /\bterminar?\b/i,
+    /\bfinalizar?\b/i,
+    /\bcerrar?\b/i,
+    /\bmarcar\s+(como\s+)?(list[oa]|complet|terminad|hecho)/i,
+    // ✅ NUEVO: Variantes de "queda funcionando/listo/resuelto"
+    /\bqueda\s+(funcionando|bien|ok|listo|resuelto|arreglado|solucionado)\b/i,
+    /\bya\s+(funciona|sirve|quedo|esta\s+listo)\b/i,
+    /\b(ya\s+)?(se\s+)?reviso\b/i,  // "ya se revisó"
+    /\b(ya\s+)?(se\s+)?arreglo\b/i, // "ya se arregló"
+    /\b(ya\s+)?(se\s+)?soluciono\b/i, // "ya se solucionó"
+    /\b(ya\s+)?(se\s+)?resolvio\b/i, // "ya se resolvió"
+    /\b(ya\s+)?(se\s+)?completo\b/i, // "ya se completó"
   ],
   // En progreso (T-P) - AMPLIADO
   progress: [
@@ -96,6 +136,14 @@ const strongShortTL = [
   /^\s*ya\s+qued[oó]\s*\.?$/i,
   /^\s*resuelto\s*\.?$/i,
   /^\s*arreglad[oa]\s*\.?$/i,
+  /^\s*completar?\s*\.?$/i,       // ✅ NUEVO
+  /^\s*completad[oa]\s*\.?$/i,    // ✅ NUEVO
+  /^\s*terminar?\s*\.?$/i,        // ✅ NUEVO
+  /^\s*terminad[oa]\s*\.?$/i,     // ✅ NUEVO
+  /^\s*finalizar?\s*\.?$/i,       // ✅ NUEVO
+  /^\s*completar\s+\d+\s*$/i,     // ✅ NUEVO: "completar 1"
+  /^\s*terminar\s+\d+\s*$/i,      // ✅ NUEVO: "terminar 1"
+  /^\s*cerrar\s+\d+\s*$/i,        // ✅ NUEVO: "cerrar 1"
 ];
 
 const strongShortTP = [

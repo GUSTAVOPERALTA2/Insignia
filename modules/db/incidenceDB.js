@@ -45,7 +45,7 @@ function ensureDirs() {
 function tryAlter(sql) { try { db.exec(sql); } catch { /* ignore */ } }
 function nowISO() { return new Date().toISOString(); }
 function areaToPrefix(area) {
-  const m = { man:'MANT', it:'SYS', ama:'HSKP', rs:'RS', seg:'SEG' };
+  const m = { man:'MAN', it:'IT', ama:'AMA', rs:'RS', seg:'SEG' };
   return m[(area || '').toLowerCase()] || 'GEN';
 }
 function safeParse(s) { try { return JSON.parse(s); } catch { return s; } }
@@ -145,28 +145,7 @@ function initSQLite() {
   `);
 
   stmtInsertMsgHandled = db.prepare(`INSERT INTO messages_handled (wa_msg_id, processed_at) VALUES (?, ?)`);
-  stmtSelectMsgHandled = db.prepare(`SELECT wa_msg_id, processed_at FROM messages_handled WHERE wa_msg_id = ?`);
-  
-  // Limpiar mensajes manejados al iniciar
-  // VICEBOT_MSG_HANDLED_WIPE_ON_START=1 → limpia TODO (útil para desarrollo)
-  // VICEBOT_MSG_HANDLED_TTL_HOURS=24 → limpia solo los de más de 24 horas (default)
-  try {
-    const wipeAll = process.env.VICEBOT_MSG_HANDLED_WIPE_ON_START === '1';
-    
-    if (wipeAll) {
-      const result = db.prepare('DELETE FROM messages_handled').run();
-      if (DEBUG) console.log('[DB] wiped ALL handled messages on start', { deleted: result.changes });
-    } else {
-      const ttlHours = parseInt(process.env.VICEBOT_MSG_HANDLED_TTL_HOURS || '24', 10);
-      const cutoff = new Date(Date.now() - ttlHours * 60 * 60 * 1000).toISOString();
-      const result = db.prepare('DELETE FROM messages_handled WHERE processed_at < ?').run(cutoff);
-      if (DEBUG && result.changes > 0) {
-        console.log('[DB] cleaned up expired handled messages', { deleted: result.changes, ttlHours });
-      }
-    }
-  } catch (e) {
-    if (DEBUG) console.warn('[DB] cleanup err', e?.message);
-  }
+  stmtSelectMsgHandled = db.prepare(`SELECT wa_msg_id FROM messages_handled WHERE wa_msg_id = ?`);
 
   stmtInsertEvent = db.prepare(`
     INSERT INTO incident_events (id, incident_id, created_at, event_type, wa_msg_id, payload_json)
@@ -260,45 +239,48 @@ function nextFolioForArea(areaCode) {
 
 // Map + persist
 function mapDraftToRecord(draft, meta = {}) {
-  // ✅ Siempre generar ID nuevo (la DB es la fuente de verdad)
-  const id = randomUUID();
+  // ✅ FIX: Validar que draft no sea undefined/null
+  const d = draft || {};
+  
+  // ✅ FIX: Usar ID del draft si existe
+  const id = d.id || randomUUID();
   const ts = nowISO();
 
-  const areas = Array.isArray(draft.areas) ? draft.areas : (draft.area_destino ? [draft.area_destino] : []);
-  const notes = Array.isArray(draft.notes) ? draft.notes : (draft.notes ? [String(draft.notes)] : []);
+  const areas = Array.isArray(d.areas) ? d.areas : (d.area_destino ? [d.area_destino] : []);
+  const notes = Array.isArray(d.notes) ? d.notes : (d.notes ? [String(d.notes)] : []);
 
   const visionTags   = Array.isArray(meta.visionTags) ? meta.visionTags : [];
   const visionSafety = Array.isArray(meta.visionSafety) ? meta.visionSafety : [];
-  const attachments  = Array.isArray(draft.attachments) ? draft.attachments : [];
+  const attachments  = Array.isArray(d.attachments) ? d.attachments : [];
 
-  // ✅ Siempre generar folio nuevo desde DB (la DB es la fuente de verdad para secuencias)
-  const folio = nextFolioForArea(draft.area_destino) || null;
+  // ✅ FIX: Usar folio del draft si existe
+  const folio = d.folio || nextFolioForArea(d.area_destino) || null;
 
   return {
     id,
     folio,
-    created_at: ts,
+    created_at: d.created_at || ts,
     updated_at: ts,
     last_msg_at: ts,
-    status: draft.status || 'open',
-    chat_id: meta.chatId || draft.chat_id || null,
+    status: d.status || 'open',
+    chat_id: d.chat_id || meta.chatId || null,
     wa_first_msg_id: meta.waFirstMsgId || null,
 
-    descripcion: draft.descripcion || null,
-    interpretacion: draft.interpretacion || null,
-    lugar: draft.lugar || null,
-    building: draft.building || null,
-    floor: draft.floor || null,
-    room: draft.room || null,
+    descripcion: d.descripcion || null,
+    interpretacion: d.interpretacion || null,
+    lugar: d.lugar || null,
+    building: d.building || null,
+    floor: d.floor || null,
+    room: d.room || null,
 
-    area_destino: draft.area_destino || null,
+    area_destino: d.area_destino || null,
     areas_json: JSON.stringify(areas),
     notes_json: JSON.stringify(notes),
     vision_tags_json: JSON.stringify(visionTags),
     vision_safety_json: JSON.stringify(visionSafety),
     attachments_json: JSON.stringify(attachments),
     source: meta.source || 'whatsapp',
-    raw_draft_json: JSON.stringify(draft),
+    raw_draft_json: JSON.stringify(d),
     origin_name: meta.originName || null,
   };
 }
@@ -332,30 +314,11 @@ function updateIncidentFolioIfMissing(incidentId, areaCode) {
   return folio;
 }
 
-// Idempotencia WA (con expiración de 24 horas)
-const MSG_HANDLED_TTL_HOURS = parseInt(process.env.VICEBOT_MSG_HANDLED_TTL_HOURS || '24', 10);
-
+// Idempotencia WA
 function hasMessageBeenHandled(waMsgId) {
   if (!db) return false;
-  const row = stmtSelectMsgHandled.get(waMsgId);
-  if (!row) return false;
-  
-  // Verificar si ha expirado (por defecto 24 horas)
-  const processedAt = new Date(row.processed_at);
-  const now = new Date();
-  const ageHours = (now - processedAt) / (1000 * 60 * 60);
-  
-  if (ageHours > MSG_HANDLED_TTL_HOURS) {
-    // Expirado, eliminar y retornar false
-    try {
-      db.prepare('DELETE FROM messages_handled WHERE wa_msg_id = ?').run(waMsgId);
-    } catch {}
-    return false;
-  }
-  
-  return true;
+  return Boolean(stmtSelectMsgHandled.get(waMsgId));
 }
-
 function markMessageHandled(waMsgId) {
   if (!db) return false;
   try { stmtInsertMsgHandled.run(waMsgId, nowISO()); return true; }

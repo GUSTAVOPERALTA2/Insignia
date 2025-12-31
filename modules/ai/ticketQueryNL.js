@@ -277,14 +277,41 @@ function parseTicketQuery(text, context = {}) {
   };
   
   // Detectar si es una consulta de tickets
+  // ✅ MEJORADO: Patrones más específicos para consultas, no reportes de incidentes
   const queryIndicators = [
-    /\b(tickets?|tareas?|incidencias?|reportes?|solicitudes?)\b/i,
-    /\b(pendientes?|abiertos?|cerrados?|completados?|cancelados?)\b/i,
-    /\b(muestrame|muéstrame|dame|dime|ver|mostrar|listar|cuales|cuáles|cuantos|cuántos)\b/i,
-    /\b(buscar?|encontrar?|detalle)\b/i,
-    /\bfolio\b/i,
-    /\b[A-Z]{2,8}-\d{3,6}\b/, // Patrón de folio
+    // "tickets/tareas" solo si no está precedido por verbos de reporte
+    /\b(mis|los|las|ver|mostrar|listar|dame|dime)\s+(tickets?|tareas?|incidencias?|reportes?)\b/i,
+    /\b(tickets?|tareas?)\s+(pendientes?|abiertos?|cerrados?|completados?|cancelados?)\b/i,
+    // Estados solo si están en contexto de consulta
+    /\b(cuales|cuáles|cuantos|cuántos)\s+.*(pendientes?|abiertos?|cerrados?)\b/i,
+    /\b(pendientes?|abiertos?|cerrados?|completados?)\s+(de\s+)?(hoy|ayer|semana|mes)\b/i,
+    // Verbos de consulta explícitos
+    /\b(muestrame|muéstrame|listar|buscar|encontrar)\s+(tickets?|tareas?|incidencias?)\b/i,
+    /\bdetalle\s+[A-Z]{2,8}-\d/i,
+    /\bfolio\s+[A-Z]{2,8}-\d/i,
+    /\b[A-Z]{2,8}-\d{3,6}\b/, // Patrón de folio solo
   ];
+  
+  // ✅ NUEVO: Frases que NO son consultas aunque contengan palabras clave
+  const notQueryPatterns = [
+    /\bquedo?\s+(al\s+)?pendiente\b/i,      // "quedó al pendiente" / "quedo pendiente"
+    /\bquedamos\s+atentos?\b/i,              // "quedamos atentos"
+    /\bgracias.*pendiente\b/i,               // "gracias, quedo pendiente"
+    /^(gracias|perfecto|excelente|listo|ok)\b/i,  // Agradecimientos simples
+    /\bavisen\b/i,                           // "avisen cuando..."
+    /\bme\s+avisan\b/i,                      // "me avisan"
+    // ✅ NUEVO: Reportes de incidentes (NO son consultas)
+    /\b(hu[eé]sped|cliente|usuario)\s+reporta\b/i,  // "el huésped reporta"
+    /\breporta\s+que\b/i,                    // "reporta que..."
+    /\bno\s+(sale|hay|funciona|enciende|prende)\b/i,  // problemas
+    /\b(fuga|gotea|roto|dañado|averiado)\b/i,  // problemas físicos
+    /\b(agua|luz|aire|tv|wifi|internet)\s+(caliente|fría|no)\b/i, // problemas de servicios
+  ];
+  
+  // Si es un reporte de incidente, NO es consulta de tickets
+  if (notQueryPatterns.some(rx => rx.test(originalText))) {
+    return result;
+  }
   
   if (!queryIndicators.some(rx => rx.test(originalText))) {
     return result;
