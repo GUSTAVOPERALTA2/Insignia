@@ -317,45 +317,55 @@ function formatRequesterFollowup(incident, comment) {
 // ──────────────────────────────────────────────────────────────
 // Enviar a grupos (NUEVOS tickets)
 // ──────────────────────────────────────────────────────────────
-async function sendIncidentToGroups(client, { message, primaryId, ccIds = [], media = null }) {
+async function sendIncidentToGroups(client, { message, primaryId, ccIds = [], media = null, additionalMedia = [] }) {
   const sent = [];
   const errors = [];
 
   if (!primaryId) return { sent, errors: ['NO_PRIMARY'] };
 
-  // principal
-  try {
-    if (media) {
-      const res = await safeSendMessage(client, primaryId, media, { caption: message });
-      if (res.ok) sent.push({ id: primaryId, ...(res.dryrun ? { dryrun: true } : {}) });
-      else errors.push({ id: primaryId, error: res.error || 'SEND_FAIL' });
-    } else {
-      const res = await safeSendMessage(client, primaryId, message);
-      if (res.ok) sent.push({ id: primaryId, ...(res.dryrun ? { dryrun: true } : {}) });
-      else errors.push({ id: primaryId, error: res.error || 'SEND_FAIL' });
+  // Helper para enviar a un grupo (mensaje principal + imágenes adicionales)
+  const sendToGroup = async (gid, isCC = false) => {
+    try {
+      // 1) Enviar mensaje principal (con o sin primera imagen)
+      if (media) {
+        const res = await safeSendMessage(client, gid, media, { caption: message });
+        if (!res.ok) {
+          errors.push({ id: gid, error: res.error || 'SEND_FAIL' });
+          return;
+        }
+      } else {
+        const res = await safeSendMessage(client, gid, message);
+        if (!res.ok) {
+          errors.push({ id: gid, error: res.error || 'SEND_FAIL' });
+          return;
+        }
+      }
+      
+      // 2) Enviar imágenes adicionales (sin caption)
+      if (Array.isArray(additionalMedia) && additionalMedia.length > 0) {
+        for (let i = 0; i < additionalMedia.length; i++) {
+          await sleep(300);  // Anti-spam delay
+          const addRes = await safeSendMessage(client, gid, additionalMedia[i]);
+          if (!addRes.ok && DEBUG) {
+            console.warn('[GROUPS] additional media failed', { gid, index: i, error: addRes.error });
+          }
+        }
+      }
+      
+      sent.push({ id: gid, ...(isCC ? { cc: true } : {}) });
+    } catch (e) {
+      if (DEBUG) console.warn('[GROUPS] send failed', gid, e?.message || e);
+      errors.push({ id: gid, error: e?.message || String(e) });
     }
-  } catch (e) {
-    if (DEBUG) console.warn('[GROUPS] send primary failed', primaryId, e?.message || e);
-    errors.push({ id: primaryId, error: e?.message || String(e) });
-  }
+  };
+
+  // Enviar al grupo principal
+  await sendToGroup(primaryId, false);
 
   // CC con delay anti-spam
   for (const gid of ccIds) {
     await sleep(250);
-    try {
-      if (media) {
-        const res = await safeSendMessage(client, gid, media, { caption: message });
-        if (res.ok) sent.push({ id: gid, ...(res.dryrun ? { dryrun: true } : {}) });
-        else errors.push({ id: gid, error: res.error || 'SEND_FAIL' });
-      } else {
-        const res = await safeSendMessage(client, gid, message);
-        if (res.ok) sent.push({ id: gid, ...(res.dryrun ? { dryrun: true } : {}) });
-        else errors.push({ id: gid, error: res.error || 'SEND_FAIL' });
-      }
-    } catch (e) {
-      if (DEBUG) console.warn('[GROUPS] send CC failed', gid, e?.message || e);
-      errors.push({ id: gid, error: e?.message || String(e) });
-    }
+    await sendToGroup(gid, true);
   }
 
   return { sent, errors };

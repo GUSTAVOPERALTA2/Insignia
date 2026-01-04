@@ -204,6 +204,7 @@ module.exports = {
   removeArea,
   isReadyForPreview,
   closeSession,
+  touch,                   // ← NEW: para mantener sesión viva sin cambiar modo
 
   // NEW: helpers para el router N-I
   hasGoodDescription,

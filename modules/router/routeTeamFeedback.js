@@ -147,25 +147,69 @@ function findUserByPhone(phoneId) {
 async function resolveAuthorName(msg) {
   const authorId = msg.author || msg.from;
   
+  if (DEBUG) console.log('[TEAMFB] resolveAuthorName input', { author: msg.author, from: msg.from, authorId });
+  
   // 1. Buscar en users.json primero
   const userFromCache = findUserByPhone(authorId);
   if (userFromCache) {
     const name = userFromCache.nombre || userFromCache.name;
     const cargo = userFromCache.cargo;
+    if (DEBUG) console.log('[TEAMFB] author from cache', { name, cargo });
     return cargo ? `${name} (${cargo})` : name;
   }
   
-  // 2. Intentar obtener contacto de WhatsApp
+  // 2. Intentar obtener contacto de WhatsApp (varias estrategias)
   try {
+    // 2a. Primero intentar getContact() directamente
     const contact = await msg.getContact();
     if (contact) {
-      const name = contact.pushname || contact.name || contact.number;
-      if (name) return name;
+      const name = contact.pushname || contact.name || contact.shortName;
+      if (name && !/^\d+$/.test(name)) {
+        if (DEBUG) console.log('[TEAMFB] author from getContact', { name });
+        return name;
+      }
+    }
+  } catch (e) {
+    if (DEBUG) console.log('[TEAMFB] getContact failed', e?.message);
+  }
+  
+  // 2b. Intentar obtener del cliente de WhatsApp directamente
+  try {
+    if (msg.author && msg._data?.notifyName) {
+      const notifyName = msg._data.notifyName;
+      if (notifyName && !/^\d+$/.test(notifyName)) {
+        if (DEBUG) console.log('[TEAMFB] author from notifyName', { notifyName });
+        return notifyName;
+      }
     }
   } catch {}
   
-  // 3. Fallback
-  return authorId ? String(authorId).replace(/@.*$/, '').replace(/\D/g, '').slice(-10) : 'Técnico';
+  // 2c. Intentar obtener contacto por número usando el cliente
+  try {
+    const client = msg.client || (typeof global !== 'undefined' && global.waClient);
+    if (client && authorId) {
+      const contactById = await client.getContactById(authorId);
+      if (contactById) {
+        const name = contactById.pushname || contactById.name || contactById.shortName;
+        if (name && !/^\d+$/.test(name)) {
+          if (DEBUG) console.log('[TEAMFB] author from getContactById', { name });
+          return name;
+        }
+      }
+    }
+  } catch (e) {
+    if (DEBUG) console.log('[TEAMFB] getContactById failed', e?.message);
+  }
+  
+  // 3. Fallback: limpiar número y mostrar como "Técnico (últimos dígitos)"
+  if (authorId) {
+    const digits = String(authorId).replace(/@.*$/, '').replace(/\D/g, '');
+    const lastDigits = digits.slice(-4);
+    if (DEBUG) console.log('[TEAMFB] author fallback', { lastDigits });
+    return `Técnico (...${lastDigits})`;
+  }
+  
+  return 'Técnico';
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -243,9 +287,9 @@ async function findTicketByQuotedMessage(msg) {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Notificar al solicitante
+// Notificar al solicitante (CON imágenes si las hay)
 // ──────────────────────────────────────────────────────────────
-async function notifyRequester(client, msg, incident, { hasEvidence = false } = {}) {
+async function notifyRequester(client, msg, incident, { hasEvidence = false, mediaList = [], statusUpdated = null } = {}) {
   const requesterChatId = incident.chat_id || incident.chatId;
   if (!requesterChatId || isGroupId(requesterChatId)) {
     if (DEBUG) console.log('[TEAMFB] no valid requester chat_id');
@@ -255,24 +299,69 @@ async function notifyRequester(client, msg, incident, { hasEvidence = false } = 
   try {
     const authorName = await resolveAuthorName(msg);
     const originalMessage = (msg.body || '').trim();
-    const rewrittenMessage = await rewriteMessage(originalMessage);
+    const rewrittenMessage = originalMessage ? await rewriteMessage(originalMessage) : '';
 
-    const evidenceNote = hasEvidence ? '\n📷 _Se adjuntó evidencia fotográfica_' : '';
+    // Construir notificación
+    const statusLabels = { done: '✅ Completado', in_progress: '🔄 En progreso', canceled: '❌ Cancelado' };
+    const statusNote = statusUpdated ? `\n\n*Estado:* ${statusLabels[statusUpdated] || statusUpdated}` : '';
+    const evidenceNote = hasEvidence ? `\n📷 _Evidencia adjunta (${mediaList.length} foto${mediaList.length > 1 ? 's' : ''})_` : '';
     
-    const notification = [
-      `📝 *${incident.folio}* — Actualización`,
-      ``,
-      rewrittenMessage,
-      evidenceNote,
-      ``,
-      `— _${authorName}_`
-    ].filter(Boolean).join('\n');
+    const notificationParts = [
+      `📝 *${incident.folio}* — Actualización`
+    ];
+    
+    if (rewrittenMessage) {
+      notificationParts.push('', rewrittenMessage);
+    }
+    
+    if (statusNote) {
+      notificationParts.push(statusNote);
+    }
+    
+    if (evidenceNote) {
+      notificationParts.push(evidenceNote);
+    }
+    
+    notificationParts.push('', `— _${authorName}_`);
+    
+    const notification = notificationParts.join('\n');
 
-    if (typeof safeSendMessage === 'function') {
-      const res = await safeSendMessage(client, requesterChatId, notification);
-      if (!res.ok) throw new Error(res.error);
+    // ✅ MEJORADO: Enviar imágenes al emisor
+    if (mediaList.length > 0) {
+      // Primera imagen con caption (el mensaje de notificación)
+      const { MessageMedia } = require('whatsapp-web.js');
+      const firstMedia = mediaList[0];
+      
+      if (typeof safeSendMessage === 'function') {
+        const res = await safeSendMessage(client, requesterChatId, firstMedia, { caption: notification });
+        if (!res.ok) throw new Error(res.error);
+      } else {
+        await client.sendMessage(requesterChatId, firstMedia, { caption: notification });
+      }
+      
+      // Resto de imágenes sin caption
+      for (let i = 1; i < mediaList.length; i++) {
+        await new Promise(r => setTimeout(r, 300)); // Anti-spam delay
+        if (typeof safeSendMessage === 'function') {
+          await safeSendMessage(client, requesterChatId, mediaList[i]);
+        } else {
+          await client.sendMessage(requesterChatId, mediaList[i]);
+        }
+      }
+      
+      if (DEBUG) console.log('[TEAMFB] sent evidence to requester', { 
+        chatId: requesterChatId, 
+        folio: incident.folio, 
+        mediaCount: mediaList.length 
+      });
     } else {
-      await client.sendMessage(requesterChatId, notification);
+      // Sin imágenes, solo texto
+      if (typeof safeSendMessage === 'function') {
+        const res = await safeSendMessage(client, requesterChatId, notification);
+        if (!res.ok) throw new Error(res.error);
+      } else {
+        await client.sendMessage(requesterChatId, notification);
+      }
     }
 
     if (DEBUG) console.log('[TEAMFB] notified requester', { chatId: requesterChatId, folio: incident.folio });
@@ -322,6 +411,40 @@ const statusUpdatePatterns = [
 function looksLikeStatusUpdate(text) {
   const t = (text || '').trim();
   return statusUpdatePatterns.some(rx => rx.test(t));
+}
+
+// ✅ NUEVO: Detectar intención de cambio de estado en el mensaje
+function detectStatusIntent(text) {
+  const t = (text || '').trim().toLowerCase();
+  
+  // Patrones de "completado/listo"
+  const donePatterns = [
+    /\b(list[oa]|hecho|terminad[oa]|completad[oa]|resuelto|arreglad[oa]|qued[oó]|ya\s+qued[oó])\b/i,
+  ];
+  
+  // Patrones de "en progreso"
+  const progressPatterns = [
+    /\b(voy|vamos|en\s+camino|enterado|trabajando)\b/i,
+  ];
+  
+  // Patrones de "cancelado"
+  const cancelPatterns = [
+    /\b(cancel[ao]|cancelad[oa])\b/i,
+  ];
+  
+  if (donePatterns.some(rx => rx.test(t))) {
+    return { status: 'done', intent: 'T-L' };
+  }
+  
+  if (progressPatterns.some(rx => rx.test(t))) {
+    return { status: 'in_progress', intent: 'T-P' };
+  }
+  
+  if (cancelPatterns.some(rx => rx.test(t))) {
+    return { status: 'canceled', intent: 'T-C' };
+  }
+  
+  return null;
 }
 
 async function maybeHandleTeamFeedback(client, msg) {
@@ -395,13 +518,27 @@ async function maybeHandleTeamFeedback(client, msg) {
     return true;
   }
 
-  // Procesar media/evidencia
-  let savedEvidence = null;
+  // ✅ NUEVO: Detectar si el mensaje también indica cambio de estado
+  const statusIntent = detectStatusIntent(body);
+  let statusUpdated = false;
+  
+  // ✅ MEJORADO: Procesar múltiples medias/evidencias
+  const savedEvidences = [];
+  const mediaListForRequester = [];
+  
   if (hasMedia) {
     try {
       const media = await msg.downloadMedia();
       if (media?.mimetype?.startsWith('image/')) {
-        savedEvidence = persistMediaToDisk(incident.id, media);
+        // Crear MessageMedia para enviar al emisor
+        const { MessageMedia } = require('whatsapp-web.js');
+        mediaListForRequester.push(new MessageMedia(media.mimetype, media.data, media.filename || undefined));
+        
+        // Guardar en disco
+        const savedEvidence = persistMediaToDisk(incident.id, media);
+        if (savedEvidence) {
+          savedEvidences.push(savedEvidence);
+        }
         
         // Guardar en DB
         if (savedEvidence && typeof incidenceDB.appendIncidentAttachments === 'function') {
@@ -413,28 +550,58 @@ async function maybeHandleTeamFeedback(client, msg) {
     }
   }
 
+  // ✅ NUEVO: Actualizar estado si el mensaje lo indica (ej: "Listo" + foto)
+  if (statusIntent && typeof incidenceDB.updateIncidentStatus === 'function') {
+    try {
+      await incidenceDB.updateIncidentStatus(incident.id, statusIntent.status);
+      statusUpdated = true;
+      if (DEBUG) console.log('[TEAMFB] status updated with evidence', { 
+        folio: incident.folio, 
+        status: statusIntent.status,
+        hasEvidence: savedEvidences.length > 0
+      });
+    } catch (e) {
+      if (DEBUG) console.warn('[TEAMFB] status update err:', e?.message);
+    }
+  }
+
   // Registrar evento
   if (typeof incidenceDB.appendIncidentEvent === 'function') {
     await incidenceDB.appendIncidentEvent(incident.id, {
-      event_type: 'team_feedback',
+      event_type: statusUpdated ? 'status_with_evidence' : 'team_feedback',
       wa_msg_id: msg.id?._serialized || null,
       payload: {
         source: hasMedia ? 'evidence_upload' : 'quoted_reply',
         text: body,
         author: msg.author || msg.from,
-        hasEvidence: !!savedEvidence,
-        evidenceId: savedEvidence?.id || null
+        hasEvidence: savedEvidences.length > 0,
+        evidenceCount: savedEvidences.length,
+        evidenceIds: savedEvidences.map(e => e.id || e.filename),
+        statusUpdated: statusUpdated ? statusIntent.status : null
       }
     });
   }
 
-  // Notificar al solicitante
-  await notifyRequester(client, msg, incident, { hasEvidence: !!savedEvidence });
+  // ✅ MEJORADO: Notificar al solicitante CON las imágenes y estado
+  await notifyRequester(client, msg, incident, { 
+    hasEvidence: savedEvidences.length > 0,
+    mediaList: mediaListForRequester,
+    statusUpdated: statusUpdated ? statusIntent.status : null
+  });
 
   // Acuse en grupo
-  const ack = savedEvidence 
-    ? `✅ Evidencia registrada para *${incident.folio}*`
-    : `✅ Nota registrada para *${incident.folio}*`;
+  let ack = '';
+  if (statusUpdated && savedEvidences.length > 0) {
+    const statusLabels = { done: 'Completado', in_progress: 'En progreso', canceled: 'Cancelado' };
+    ack = `✅ *${incident.folio}* marcado como *${statusLabels[statusIntent.status] || statusIntent.status}* con evidencia enviada al solicitante`;
+  } else if (savedEvidences.length > 0) {
+    ack = `✅ Evidencia registrada para *${incident.folio}* y enviada al solicitante`;
+  } else if (statusUpdated) {
+    const statusLabels = { done: 'Completado', in_progress: 'En progreso', canceled: 'Cancelado' };
+    ack = `✅ *${incident.folio}* marcado como *${statusLabels[statusIntent.status] || statusIntent.status}*`;
+  } else {
+    ack = `✅ Nota registrada para *${incident.folio}*`;
+  }
   
   await safeReply(client, msg, ack);
 

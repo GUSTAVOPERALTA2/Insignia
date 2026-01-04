@@ -190,7 +190,22 @@ async function handleIncomingMessage(client, msg, opts = {}) {
 
     // 1) Grupo: actualizaciones de estado (done/progress/cancel), consultas y evidencias
     if (isGroupId(chatId)) {
-      // ✅ PRIMERO: routeGroupsUpdate para actualizaciones de estado
+      // ✅ NUEVO: Si tiene MEDIA + CITA, priorizar routeTeamFeedback para enviar evidencia al emisor
+      // Esto permite que "Listo" + foto se envíe al solicitante
+      if (msg.hasMedia && msg.hasQuotedMsg) {
+        try {
+          const handledTeam = await maybeHandleTeamFeedback(client, msg);
+          if (handledTeam) {
+            if (waId) markMessageHandled(waId);
+            return true;
+          }
+        } catch (e) {
+          if (DEBUG) console.warn('[CORE-ROUTER] teamFeedback(priority) err', e?.message || e);
+          if (isSessionClosedError(e)) return false;
+        }
+      }
+      
+      // ✅ SEGUNDO: routeGroupsUpdate para actualizaciones de estado (sin media)
       // Maneja: "Listo", "Vamos", "Cancela, esto no es mío", etc.
       try {
         const handledUpdate = await maybeHandleGroupCancel(client, msg);
@@ -203,7 +218,7 @@ async function handleIncomingMessage(client, msg, opts = {}) {
         if (isSessionClosedError(e)) return false;
       }
 
-      // ✅ SEGUNDO: Consultas de tickets con lenguaje natural
+      // ✅ TERCERO: Consultas de tickets con lenguaje natural
       // Maneja: "tickets pendientes", "buscar cocina", etc.
       try {
         const handledQuery = await maybeHandleTicketQuery(client, msg);
@@ -216,7 +231,7 @@ async function handleIncomingMessage(client, msg, opts = {}) {
         if (isSessionClosedError(e)) return false;
       }
 
-      // ✅ TERCERO: routeTeamFeedback para evidencias (fotos) y mensajes citando ticket
+      // ✅ CUARTO: routeTeamFeedback para evidencias (fotos sin texto de estado) y mensajes citando ticket
       // Solo procesa si tiene FOTO o CITA el mensaje del ticket
       try {
         const handledTeam = await maybeHandleTeamFeedback(client, msg);

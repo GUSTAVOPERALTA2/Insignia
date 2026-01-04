@@ -32,7 +32,7 @@ const {
 } = require('../db/incidenceDB');
 
 const {
-  ensureSession, resetSession, pushTurn,
+  ensureSession, resetSession, pushTurn, touch,
   setMode, setDraftField, replaceAreas, addArea, removeArea,
   isReadyForPreview, closeSession,
 } = require('../state/niSession');
@@ -222,10 +222,23 @@ function isSessionBareForNI(session) {
     d.lugar ||
     d.area_destino ||
     (Array.isArray(d._details) && d._details.length) ||
-    d.interpretacion;
+    d.interpretacion ||
+    d.descripcion; // ✅ FIX: También considerar si hay descripción
   const hasMedia = Array.isArray(session._pendingMedia) && session._pendingMedia.length;
   const hasVision = Array.isArray(session._visionAreaHints) && session._visionAreaHints.length;
-  return !hasStruct && !hasMedia && !hasVision;
+  // ✅ FIX: También considerar batch/multiple tickets como sesión activa
+  const hasBatchTickets = Array.isArray(session._batchTickets) && session._batchTickets.length;
+  const hasMultipleTickets = Array.isArray(session._multipleTickets) && session._multipleTickets.length;
+  // ✅ FIX: Considerar datos pendientes de flujos especiales
+  const hasPendingData = session._pendingNewIncidentText || 
+                         session._pendingDescriptionText ||
+                         session._candidateIncidentText ||
+                         session._editingTicketNum !== undefined;
+  // ✅ FIX: Considerar modos especiales que requieren interacción
+  const isInSpecialMode = ['different_problem', 'description_or_new', 'context_switch', 
+                           'multiple_tickets', 'edit_multiple_ticket', 'confirm_batch',
+                           'choose_area_multi', 'edit_batch_ticket'].includes(session.mode);
+  return !hasStruct && !hasMedia && !hasVision && !hasBatchTickets && !hasMultipleTickets && !hasPendingData && !isInSpecialMode;
 }
 
 /* ──────────────────────────────
@@ -440,9 +453,10 @@ function classifyConfirmMessage(text, draft = {}) {
   // CAMBIO EXPRESS DE ÁREA (mensajes cortos con patrón específico)
   // ═══════════════════════════════════════════════════════════════
   // Patrones: "para X", "mándalo a X", "es para X", "envíalo a X"
+  // ✅ FIX: Incluir aliases comunes: ird, irs = rs (room service)
   const areaChangePatterns = [
-    /^(para|es\s+para)\s+(it|sistemas|mantenimiento|ama|housekeeping|seguridad|room\s*service)\s*$/i,
-    /^(mandalo|mándalo|envialo|envíalo)\s+a\s+(it|sistemas|mantenimiento|ama|housekeeping|seguridad|room\s*service)\s*$/i,
+    /^(para|es\s+para)\s+(it|sistemas|mantenimiento|mantto|mant|man|ama|housekeeping|hskp|seguridad|seg|room\s*service|rs|ird|irs)\s*$/i,
+    /^(mandalo|mándalo|envialo|envíalo)\s+a\s+(it|sistemas|mantenimiento|mantto|mant|man|ama|housekeeping|hskp|seguridad|seg|room\s*service|rs|ird|irs)\s*$/i,
     /^(cambia|cambiar?)\s+(el\s+)?area\s+(a|para)\s+/i,
     /^el\s+area\s+es\s+/i,
   ];
@@ -452,7 +466,8 @@ function classifyConfirmMessage(text, draft = {}) {
   }
   
   // Códigos de área solos
-  const areaCodeAlone = /^(it|man|ama|seg|rs|sistemas|mantenimiento|housekeeping|seguridad|room\s*service)\s*$/i;
+  // ✅ FIX: Incluir aliases comunes: ird, irs = rs
+  const areaCodeAlone = /^(it|man|mant|mantto|ama|seg|rs|ird|irs|sistemas|mantenimiento|housekeeping|hskp|seguridad|room\s*service)\s*$/i;
   if (len < 20 && areaCodeAlone.test(t)) {
     return 'area_change';
   }
@@ -1040,11 +1055,12 @@ function extractExplicitArea(text) {
   const t = String(text).toLowerCase();
   
   // Patrones para detectar área explícita
+  // ✅ FIX: Agregar aliases comunes
   if (/\b(solo\s+)?(it|sistemas?|tecnolog[ií]a)\b/.test(t)) return 'it';
-  if (/\b(solo\s+)?(mant|mantenimiento)\b/.test(t)) return 'man';
+  if (/\b(solo\s+)?(mant|mantto|mantenimiento|man)\b/.test(t)) return 'man';
   if (/\b(solo\s+)?(ama|hskp|housekeep|limpieza)\b/.test(t)) return 'ama';
-  if (/\b(solo\s+)?(segur|vigilancia)\b/.test(t)) return 'seg';
-  if (/\b(solo\s+)?(rs|room\s*service)\b/.test(t)) return 'rs';
+  if (/\b(solo\s+)?(seg|segur|vigilancia)\b/.test(t)) return 'seg';
+  if (/\b(solo\s+)?(rs|ird|irs|room\s*service)\b/.test(t)) return 'rs';
   
   return null;
 }
@@ -1179,22 +1195,25 @@ async function finalizeAndDispatch({ client, msg, session }) {
         originChatId: chatId
       });
       
-      // Preparar media si hay
-      let media = null;
+      // ✅ MEJORADO: Enviar TODAS las imágenes, no solo la primera
+      const { MessageMedia } = require('whatsapp-web.js');
+      const mediaList = [];
+      
       if (Array.isArray(s._pendingMedia) && s._pendingMedia.length > 0) {
-        const firstMedia = s._pendingMedia[0];
-        if (firstMedia && firstMedia.mimetype && firstMedia.data) {
-          const { MessageMedia } = require('whatsapp-web.js');
-          media = new MessageMedia(firstMedia.mimetype, firstMedia.data, firstMedia.filename || undefined);
+        for (const m of s._pendingMedia) {
+          if (m && m.mimetype && m.data) {
+            mediaList.push(new MessageMedia(m.mimetype, m.data, m.filename || undefined));
+          }
         }
       }
       
-      // Enviar
+      // Enviar: primera imagen con caption, resto como imágenes adicionales
       const result = await sendIncidentToGroups(client, {
         message: formatted,
         primaryId,
         ccIds,
-        media
+        media: mediaList.length > 0 ? mediaList[0] : null,  // Primera imagen con texto
+        additionalMedia: mediaList.slice(1)  // Resto de imágenes
       });
       
       if (result.sent && result.sent.length > 0) {
@@ -1235,7 +1254,7 @@ async function detectMultipleAreas(text) {
   const t = text.toLowerCase();
   const detected = [];
   
-  // ✅ NUEVO: Términos que indican que TODO el problema es de IT (aunque mencione TV)
+  // ✅ NUEVO: Términos que indican que TODO el problema es de IT (aunque mencione "no sirve")
   const itContextTerms = [
     /chromecast/i,
     /apple\s*tv/i,
@@ -1248,10 +1267,26 @@ async function detectMultipleAreas(text) {
     /proyectar|mirror|screen\s*cast/i,
     /celular\s+(a|en)\s+(la\s+)?tv/i,  // "celular a la tv" = streaming
     /tel[eé]fono\s+(a|en)\s+(la\s+)?tv/i,
+    /computadora/i,  // ✅ AGREGADO: computadora = IT
+    /laptop/i,       // ✅ AGREGADO
+    /tablet/i,       // ✅ AGREGADO
+    /monitor/i,      // ✅ AGREGADO
+    /impresora/i,    // ✅ AGREGADO
+    /sistema/i,      // ✅ AGREGADO
   ];
   
-  // Si hay contexto de IT/streaming, NO es problema de mantenimiento
+  // Si hay contexto de IT/dispositivos, NO es problema de mantenimiento
   const isITContext = itContextTerms.some(rx => rx.test(t));
+  
+  // ✅ NUEVO: Detectar si hay múltiples problemas DISTINTOS usando separadores
+  // Solo considerar múltiples áreas si hay "y", "también", "además", etc.
+  const hasMultipleProblemIndicators = /\b(y\s+(?:también\s+)?(?:el|la|en)|también|además|aparte)\b/i.test(t);
+  
+  // Si no hay indicadores de múltiples problemas Y hay contexto IT, retornar null
+  if (!hasMultipleProblemIndicators && isITContext) {
+    if (DEBUG) console.log('[NI] detectMultipleAreas: single IT problem, no multiple areas');
+    return null;
+  }
   
   // Patrones para cada área con descripción
   const areaPatterns = [
@@ -1288,7 +1323,7 @@ async function detectMultipleAreas(text) {
         /regadera|lavamanos|lavabo|inodoro|wc/i,
         /revisar|revisen|checar|chequen/i,
       ],
-      // ✅ NUEVO: Excluir si el contexto es claramente IT
+      // ✅ MEJORADO: Excluir si el contexto es claramente IT (dispositivos)
       skipIf: () => isITContext,
       extractDesc: (txt) => {
         // Patrones específicos - se detienen en coma, punto, "y", o fin de oración
@@ -1314,6 +1349,7 @@ async function detectMultipleAreas(text) {
         /sistema|sistemas/i,
         /conectar(se)?\s+(a\s+)?(la\s+)?tv/i, // "conectar a la TV" = IT
         /proyectar|mirror|screen\s*cast/i,
+        /monitor|impresora|scanner/i,  // ✅ AGREGADO
       ],
       extractDesc: (txt) => {
         // Patrones específicos - se detienen en coma, punto, "y", o fin de oración
@@ -1323,7 +1359,8 @@ async function detectMultipleAreas(text) {
                   txt.match(/(chromecast|apple\s*tv|roku)[^,.y]*/i) ||
                   txt.match(/temas?\s+con\s+(su\s+)?(chromecast|internet|wifi)/i) ||
                   txt.match(/conectar(se)?\s+(a\s+)?(la\s+)?tv[^,.y]*/i) ||
-                  txt.match(/tel[eé]fono[^,.y]*/i);
+                  txt.match(/tel[eé]fono[^,.y]*/i) ||
+                  txt.match(/(computadora|laptop|monitor|impresora)[^,.y]*/i);  // ✅ AGREGADO
         return m ? m[0].trim() : 'Problema de sistemas';
       }
     },
@@ -1682,6 +1719,391 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
 
   const s = ensureSession(chatId);
   
+  // ═══════════════════════════════════════════════════════════════════════════
+  // HANDLERS DE MODOS ESPECIALES - Deben ejecutarse ANTES del filtro de bare session
+  // Estos modos requieren respuestas específicas (enviar, reemplazar, agregar, etc.)
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  // Handler: different_problem (menú de enviar/reemplazar/agregar/cancelar)
+  if (s.mode === 'different_problem' && text) {
+    const t = norm(text);
+    const pendingNewText = s._pendingNewIncidentText || '';
+    
+    if (DEBUG) console.log('[DIFFERENT_PROBLEM] handling response', { response: text, pendingLength: pendingNewText.length });
+    
+    // Opción: enviar - enviar el ticket actual y crear uno nuevo
+    if (/^envi[ao]r?\b/i.test(t) || /^(si|confirmar?)\b/i.test(t) && pendingNewText) {
+      try {
+        await finalizeAndDispatch({ client, msg, session: s });
+      } catch (e) {
+        if (DEBUG) console.warn('[DIFFERENT_PROBLEM] dispatch error', e?.message);
+      }
+      
+      // Crear nuevo draft
+      s.draft = {};
+      s.draft.descripcion_original = pendingNewText;
+      s.draft.descripcion = pendingNewText;
+      s._pendingNewIncidentText = null;
+      s._pendingOldIncidentDraft = null;
+      s._pendingNewArea = null;
+      s._areDifferentAreas = null;
+      
+      const strong = findStrongPlaceSignals(pendingNewText);
+      if (strong) {
+        await normalizeAndSetLugar(s, msg, strong.value, { rawText: pendingNewText });
+      }
+      
+      try {
+        const a = await detectArea(pendingNewText);
+        if (a?.area) {
+          setDraftField(s, 'area_destino', a.area);
+          addArea(s, a.area);
+        }
+      } catch {}
+      
+      await refreshIncidentDescription(s, pendingNewText);
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '📋 *Nuevo ticket:*\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Opción: reemplazar
+    if (/^reemplaz[ao]r?\b/i.test(t) || /^sustitu[iy]r?\b/i.test(t) || /^cambiar?\b/i.test(t)) {
+      s.draft.descripcion = pendingNewText;
+      s.draft.descripcion_original = pendingNewText;
+      s.draft._details = [];
+      s._pendingNewIncidentText = null;
+      s._pendingOldIncidentDraft = null;
+      s._pendingNewArea = null;
+      s._areDifferentAreas = null;
+      
+      const strong = findStrongPlaceSignals(pendingNewText);
+      if (strong) {
+        await normalizeAndSetLugar(s, msg, strong.value, { rawText: pendingNewText });
+      }
+      
+      try {
+        const a = await detectArea(pendingNewText);
+        if (a?.area) {
+          setDraftField(s, 'area_destino', a.area);
+          s.draft.areas = [a.area];
+        }
+      } catch {}
+      
+      await refreshIncidentDescription(s, pendingNewText);
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '✅ Ticket reemplazado:\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Opción: agregar (solo si NO son áreas diferentes)
+    if (/^agregar\b/i.test(t) || /^a[ñn]adir\b/i.test(t)) {
+      if (s._areDifferentAreas) {
+        await replySafe(msg,
+          '⚠️ No puedo agregar como detalle porque son *áreas diferentes*.\n\n' +
+          'Opciones:\n' +
+          '• *enviar* — enviar el ticket actual y crear uno nuevo\n' +
+          '• *reemplazar* — descartar el actual y usar el nuevo\n' +
+          '• *cancelar* — ignorar el mensaje'
+        );
+        return;
+      }
+      
+      // Agregar como detalle
+      addDetail(s, pendingNewText);
+      s._pendingNewIncidentText = null;
+      s._pendingOldIncidentDraft = null;
+      s._pendingNewArea = null;
+      s._areDifferentAreas = null;
+      
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '✅ Detalle agregado:\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Opción: cancelar
+    if (/^cancelar?\b/i.test(t) || /^ignorar?\b/i.test(t) || /^no\b/i.test(t)) {
+      s._pendingNewIncidentText = null;
+      s._pendingOldIncidentDraft = null;
+      s._pendingNewArea = null;
+      s._areDifferentAreas = null;
+      
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '↩️ Mensaje ignorado. Tu ticket sigue así:\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Si no reconoce la opción, mostrar menú de nuevo
+    await replySafe(msg,
+      '🤔 No entendí. Por favor elige una opción:\n\n' +
+      '• *enviar* — enviar el ticket actual y crear uno nuevo\n' +
+      '• *reemplazar* — descartar el actual y usar el nuevo\n' +
+      '• *agregar* — agregar como detalle al ticket actual\n' +
+      '• *cancelar* — ignorar el mensaje'
+    );
+    return;
+  }
+  
+  // Handler: description_or_new (menú de agregar/nuevo/cancelar)
+  if (s.mode === 'description_or_new' && text) {
+    const t = norm(text);
+    const pendingText = s._pendingDescriptionText || '';
+    
+    if (DEBUG) console.log('[DESC_OR_NEW] handling response', { response: text, pendingLength: pendingText.length });
+    
+    // Opción: agregar
+    if (/^agregar\b/i.test(t)) {
+      const currentDesc = s.draft.descripcion || '';
+      const currentLugar = s.draft.lugar || '';
+      
+      const descIsJustPlace = norm(currentDesc).includes(norm(currentLugar).replace('habitacion ', '')) ||
+                              currentDesc.length < 25 ||
+                              /^(habitacion|hab|villa|en)\s*\d+$/i.test(norm(currentDesc));
+      
+      if (descIsJustPlace || !currentDesc) {
+        s.draft.descripcion = pendingText;
+        s.draft.descripcion_original = pendingText;
+      } else {
+        addDetail(s, pendingText);
+      }
+      
+      s._pendingDescriptionText = null;
+      
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '✅ Información agregada:\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Opción: nuevo ticket
+    if (/^nuevo\b/i.test(t) || /^crear\b/i.test(t) || /^separar\b/i.test(t)) {
+      // Primero enviar el actual si tiene contenido válido
+      if (s.draft.descripcion && s.draft.area_destino) {
+        try {
+          await finalizeAndDispatch({ client, msg, session: s });
+        } catch (e) {
+          if (DEBUG) console.warn('[DESC_OR_NEW] dispatch error', e?.message);
+        }
+      }
+      
+      // Crear nuevo draft
+      s.draft = {};
+      s.draft.descripcion_original = pendingText;
+      s.draft.descripcion = pendingText;
+      s._pendingDescriptionText = null;
+      
+      const strong = findStrongPlaceSignals(pendingText);
+      if (strong) {
+        await normalizeAndSetLugar(s, msg, strong.value, { rawText: pendingText });
+      }
+      
+      try {
+        const a = await detectArea(pendingText);
+        if (a?.area) {
+          setDraftField(s, 'area_destino', a.area);
+          addArea(s, a.area);
+        }
+      } catch {}
+      
+      await refreshIncidentDescription(s, pendingText);
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '📋 *Nuevo ticket:*\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Opción: cancelar
+    if (/^cancelar?\b/i.test(t) || /^ignorar?\b/i.test(t) || /^no\b/i.test(t)) {
+      s._pendingDescriptionText = null;
+      
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '↩️ Mensaje ignorado. Tu ticket sigue así:\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Si no reconoce la opción
+    await replySafe(msg,
+      '🤔 No entendí. Por favor elige:\n\n' +
+      '• *agregar* — agregar como detalle a este ticket\n' +
+      '• *nuevo* — crear un ticket nuevo con esto\n' +
+      '• *cancelar* — ignorar este mensaje'
+    );
+    return;
+  }
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // HANDLER: choose_area_multi - Usuario elige área de una lista numérica
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (s.mode === 'choose_area_multi' && text) {
+    const t = norm(text);
+    const pendingAreas = s._multiAreaPending || [];
+    
+    // Verificar si es un número (1, 2, 3, etc.)
+    const numMatch = t.match(/^(\d+)$/);
+    if (numMatch && pendingAreas.length > 0) {
+      const idx = parseInt(numMatch[1], 10) - 1;
+      if (idx >= 0 && idx < pendingAreas.length) {
+        const selectedArea = pendingAreas[idx];
+        
+        // Establecer el área seleccionada
+        s.draft.areas = [selectedArea.code];
+        setDraftField(s, 'area_destino', selectedArea.code);
+        
+        // Limpiar pendientes
+        s._multiAreaPending = null;
+        s._multiAreaOriginalText = null;
+        
+        // Mostrar preview
+        const preview = formatPreviewMessage(s.draft);
+        await replySafe(msg, `✅ Área seleccionada: *${areaLabel(selectedArea.code)}*\n\n` + preview);
+        setMode(s, 'confirm');
+        if (DEBUG) console.log('[NI] area selected from multi-choice:', selectedArea.code);
+        return;
+      }
+    }
+    
+    // Verificar si escribió el nombre del área directamente
+    const directArea = extractExplicitArea(text);
+    if (directArea && pendingAreas.some(a => a.code === directArea)) {
+      s.draft.areas = [directArea];
+      setDraftField(s, 'area_destino', directArea);
+      s._multiAreaPending = null;
+      s._multiAreaOriginalText = null;
+      
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, `✅ Área seleccionada: *${areaLabel(directArea)}*\n\n` + preview);
+      setMode(s, 'confirm');
+      if (DEBUG) console.log('[NI] area selected by name from multi-choice:', directArea);
+      return;
+    }
+    
+    // Opción: cancelar
+    if (/^cancelar?\b/i.test(t) || /^no\b/i.test(t)) {
+      s._multiAreaPending = null;
+      s._multiAreaOriginalText = null;
+      resetSession(chatId);
+      await replySafe(msg, '❌ Ticket cancelado.');
+      return;
+    }
+    
+    // Si no reconoce la opción, mostrar opciones de nuevo
+    const areaOptions = pendingAreas.map((a, i) => 
+      `${i + 1}. *${areaLabel(a.code)}* — _${a.hint}_`
+    ).join('\n');
+    
+    await replySafe(msg,
+      `🤔 No entendí. Responde con el *número* de la opción:\n\n` +
+      `${areaOptions}\n\n` +
+      `O escribe *cancelar* para descartar.`
+    );
+    return;
+  }
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // FIN DE HANDLERS DE MODOS ESPECIALES
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // HANDLER: Mensajes "basura" CUANDO HAY sesión activa (Opción A)
+  // Recordar al usuario que tiene un ticket pendiente
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (!isSessionBareForNI(s) && text && !msg.hasMedia) {
+    const tNorm = norm(text);
+    
+    // ✅ CRÍTICO: NO interceptar confirmaciones cuando estamos en modo confirm/preview
+    // Estos modos esperan "sí", "no", "ok", etc. como respuestas válidas
+    const isConfirmationMode = ['confirm', 'preview', 'confirm_batch', 'multiple_tickets'].includes(s.mode);
+    const looksLikeConfirmation = isYes(text) || isNo(text);
+    
+    if (isConfirmationMode && looksLikeConfirmation) {
+      // Dejar pasar al handler de confirmación
+      if (DEBUG) console.log('[NI] skipping garbage handler for confirmation token', { text, mode: s.mode });
+    } else {
+      // Patrones de mensajes claramente NO-incidencia
+      const garbagePatterns = [
+        /^[a-z]\s+(en|de|para|con|el|la|un|una)\s+/i,  // "f en el chat", "x de nada"
+        /^(jaja|jeje|haha|lol|xd|😂|🤣|👍|👌|🙏|😄|😊|🤭)+$/i,
+        /^[\?\!\.]+$/,  // Solo signos de puntuación
+        /^[a-z]{1,2}$/i,  // Solo 1-2 letras (pero NO si es confirmación)
+        /^(okok|okk|oks|simon|nel|nop|nope|aja|ajam|mhm|hmm|mmm)$/i,  // ✅ Removido ok/va/vale/dale/sale - son confirmaciones
+      ];
+      
+      // Preguntas claramente NO relacionadas con incidencias
+      const nonIncidentQuestions = [
+        /^(quien|quién)\s+(te\s+)?(creo|hizo|programo|desarrollo)/i,
+        /^(que|qué)\s+(hora|día|fecha|clima|tiempo)\s/i,
+        /^(como|cómo)\s+te\s+llamas/i,
+        /^(eres|sos)\s+(un\s+)?(bot|robot|ia|humano|persona)/i,
+        /^(que|qué)\s+(eres|puedes\s+hacer)/i,
+        /^(cuanto|cuánto)\s+es\s+\d/i,  // calculadora
+        /^(dime|cuentame|háblame)\s+(un\s+)?(chiste|dato|historia)/i,
+      ];
+      
+      // ✅ NUEVO: No considerar garbage si parece confirmación
+      const confirmationTokens = /^(si|sí|no|ok|va|vale|dale|sale|listo|enviar|cancelar|confirmar)$/i;
+      const isConfirmToken = confirmationTokens.test(tNorm);
+      
+      const isGarbage = !isConfirmToken && garbagePatterns.some(rx => rx.test(tNorm));
+      const isNonIncidentQuestion = nonIncidentQuestions.some(rx => rx.test(tNorm));
+      
+      if (isGarbage || isNonIncidentQuestion) {
+        if (DEBUG) console.log('[NI] garbage/non-incident with active session', { text, isGarbage, isNonIncidentQuestion });
+        
+        // ✅ CRÍTICO: Mantener la sesión viva
+        touch(s);
+        
+        // Verificar si hay un draft con contenido real
+        const hasDraftContent = s.draft && (s.draft.descripcion || s.draft.lugar || s.draft.area_destino);
+        const hasBatchTickets = Array.isArray(s._batchTickets) && s._batchTickets.length > 0;
+        const hasMultipleTickets = Array.isArray(s._multipleTickets) && s._multipleTickets.length > 0;
+        
+        if (hasDraftContent || hasBatchTickets || hasMultipleTickets) {
+          // Tiene ticket(s) pendiente(s) - recordarle
+          let reminder = '😊 ';
+          
+          // Respuesta contextual breve según el tipo de mensaje
+          if (isNonIncidentQuestion) {
+            reminder += 'Eso no lo sé, pero lo que sí sé es que ';
+          } else {
+            reminder += 'Te leo, pero ';
+          }
+          
+          if (hasBatchTickets) {
+            const count = s._batchTickets.length;
+            reminder += `tienes *${count} tickets* pendientes de confirmar.\n\n`;
+            reminder += '¿Los envío? Responde *sí* o *cancelar*.';
+          } else if (hasMultipleTickets) {
+            const count = s._multipleTickets.length;
+            reminder += `tienes *${count} tickets* en edición.\n\n`;
+            reminder += 'Opciones: *enviar ambos*, *editar 1*, *editar 2*, o *cancelar*.';
+          } else if (hasDraftContent) {
+            const desc = s.draft.descripcion || '(sin descripción)';
+            const lugar = s.draft.lugar || '(sin lugar)';
+            const area = s.draft.area_destino ? s.draft.area_destino.toUpperCase() : '(sin área)';
+            
+            reminder += `tienes un *ticket pendiente*:\n\n`;
+            reminder += `📋 _"${desc.substring(0, 60)}${desc.length > 60 ? '...' : ''}"_\n`;
+            reminder += `📍 ${lugar} → ${area}\n\n`;
+            
+            if (s.mode === 'confirm' || s.mode === 'preview') {
+              reminder += '¿Lo envío? Responde *sí* para enviarlo o *cancelar* para descartarlo.';
+            } else {
+              reminder += '¿Qué quieres hacer con este ticket?';
+            }
+          }
+          
+          await replySafe(msg, reminder);
+          return;
+        }
+      }
+    }
+  }
+  
   // ✅ NUEVO: Filtrar mensajes ambiguos/basura ANTES de procesarlos
   // Solo si NO hay sesión activa con draft
   if (isSessionBareForNI(s) && !msg.hasMedia) {
@@ -1864,40 +2286,6 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
   
   // ✅ NUEVO: Detectar solicitudes directas que NO son incidencias
   // (el usuario confunde al bot con room service, recepción, etc.)
-  // ✅ NUEVO: Detectar solicitudes directas que NO son incidencias
-  // Solo si NO hay sesión activa con draft Y no está en modo confirm
-  if (isSessionBareForNI(s) && !msg.hasMedia && s.mode !== 'confirm' && s.mode !== 'preview') {
-    const tNorm = norm(text);
-    
-    // Patrones de solicitudes directas (NO son reportes de incidencias)
-    const directRequestPatterns = [
-      /^(me\s+)?puedes?\s+(traer|llevar|enviar|mandar)/i,          // "me puedes traer..."
-      /^(me\s+)?tra(e|iga)s?\s+(un|una|el|la|mi)/i,               // "tráeme un..."
-      /^(quiero|necesito|ocupo)\s+(un|una|que|comida|agua)/i,     // "quiero comida"
-      /^tengo\s+(hambre|sed|frío|calor|sueño)/i,                  // "tengo hambre"
-      /^(dame|deme|tráeme|tráigame)\s+/i,                         // "dame..."
-      /^(reserva|resérvame|apartame)\s+/i,                        // "resérvame..."
-    ];
-    
-    // Si parece solicitud directa
-    if (directRequestPatterns.some(rx => rx.test(tNorm))) {
-      // Verificar que NO sea un reporte de problema
-      const problemKeywords = /\b(no\s+funciona|no\s+sirve|no\s+enciende|no\s+prende|roto|dañado|averiado|falla|fuga|gotea|problema|prender|encender)\b/i;
-      
-      if (!problemKeywords.test(tNorm)) {
-        if (DEBUG) console.log('[NI] detected direct request (not incident)', { text: text.substring(0, 50) });
-        
-        await replySafe(msg, 
-          '🤖 Soy el bot de incidencias del hotel. No puedo procesar solicitudes directas de servicio.\n\n' +
-          '📞 Para *Room Service*, marca la extensión del restaurante.\n' +
-          '🛎️ Para solicitudes a tu habitación, contacta a *Recepción*.\n\n' +
-          'Si tienes un *problema técnico* que reportar (algo no funciona, está dañado, etc.), con gusto te ayudo a crear el ticket.'
-        );
-        return;
-      }
-    }
-  }
-  
   // ✅ NUEVO: Detectar si el mensaje menciona un folio existente para agregar comentario
   const folioInText = text.match(/\b([A-Z]{2,5}-\d{2,6})\b/i);
   if (folioInText && isSessionBareForNI(s)) {
@@ -2967,12 +3355,19 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
     );
     return;
   } else if (s.mode === 'edit_multiple_ticket' && text) {
-    // ✅ NUEVO: Edición de ticket en modo múltiple
+    // ═══════════════════════════════════════════════════════════════
+    // MODO EDIT_MULTIPLE_TICKET MEJORADO - edición inteligente
+    // Detecta cambios de lugar/área/descripción de forma natural
+    // ═══════════════════════════════════════════════════════════════
     const t = norm(text);
     const ticketNum = s._editingTicketNum || 1;
     
-    // Listo - terminar edición
-    if (/^listo\b/i.test(t) || /^terminar?\b/i.test(t)) {
+    if (DEBUG) console.log('[EDIT_MULTI] input', { text: text.substring(0, 50), ticketNum });
+    
+    // ─────────────────────────────────────────────────────────────────
+    // Comandos explícitos: listo, cancelar
+    // ─────────────────────────────────────────────────────────────────
+    if (/^(listo|terminar|ok|volver|regresar)\b/i.test(t)) {
       // Actualizar el ticket en la lista
       if (s._multipleTickets) {
         s._multipleTickets[ticketNum - 1] = { ...s.draft, _ticketNum: ticketNum };
@@ -3006,7 +3401,6 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
       return;
     }
     
-    // Cancelar - descartar cambios
     if (/^cancelar?\b/i.test(t)) {
       // Restaurar ticket original
       if (s._multipleTickets && s._multipleTickets[ticketNum - 1]) {
@@ -3019,79 +3413,162 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
       return;
     }
     
-    // Cambio de lugar
-    if (/^lugar\s+/i.test(t)) {
-      const newLugar = text.replace(/^lugar\s+/i, '').trim();
-      const result = await normalizeAndSetLugar(s, msg, newLugar, { rawText: text });
-      if (result?.ok) {
-        await replySafe(msg, `✅ Lugar actualizado a *${s.draft.lugar}*\n\nEscribe *listo* para terminar o sigue editando.`);
-      } else {
-        await replySafe(msg, `⚠️ No encontré "${newLugar}" en el catálogo. Intenta con otro lugar o escribe *listo*.`);
-      }
-      return;
-    }
-
-    // Cambio de área por lenguaje natural
-    // Detectar patrones como: "es para sistemas", "envíalo a mantenimiento", etc.
+    // ─────────────────────────────────────────────────────────────────
+    // DETECCIÓN INTELIGENTE: ¿Qué quiere cambiar el usuario?
+    // ─────────────────────────────────────────────────────────────────
+    
+    // Mapa de áreas válidas
+    const areaMap = {
+      'it': 'it', 'sistemas': 'it', 'tecnologia': 'it', 'tech': 'it',
+      'man': 'man', 'mantenimiento': 'man', 'mantto': 'man', 'mant': 'man',
+      'ama': 'ama', 'housekeeping': 'ama', 'hskp': 'ama', 'limpieza': 'ama', 'ama de llaves': 'ama',
+      'seg': 'seg', 'seguridad': 'seg', 'security': 'seg', 'vigilancia': 'seg',
+      'rs': 'rs', 'room service': 'rs', 'roomservice': 'rs', 'alimentos': 'rs',
+    };
+    
+    const areaNames = { 
+      'it': 'IT/Sistemas', 'man': 'Mantenimiento', 'ama': 'Ama de llaves', 
+      'seg': 'Seguridad', 'rs': 'Room Service' 
+    };
+    
+    // 1) CAMBIO DE ÁREA - patrones naturales
+    // Detecta: "para IT", "es de mantenimiento", "mándalo a seguridad", "IT", etc.
     const areaChangePatterns = [
-      /^(?:es\s+para|envialo?\s+a|mand[aá]lo?\s+a|cambialo?\s+a|es\s+de)\s+(.+)/i,
-      /^(?:área|area)\s+(.+)/i
+      /^(para|es para|es de|de|a|mand[ao]l?o?\s+a|env[ií]al?o?\s+a|cambia\s+a|[aá]rea)\s+(.+)$/i,
+      /^(it|man|ama|seg|rs|mantenimiento|sistemas|seguridad|housekeeping|room\s*service)$/i,
     ];
-
-    let areaCandidate = null;
+    
     for (const pattern of areaChangePatterns) {
-      const match = text.match(pattern);
+      const match = t.match(pattern);
       if (match) {
-        areaCandidate = match[1].trim();
+        const areaText = (match[2] || match[1] || '').toLowerCase().trim();
+        const newArea = areaMap[areaText] || areaMap[areaText.replace(/\s+/g, '')];
+        
+        if (newArea) {
+          s.draft.area_destino = newArea;
+          s.draft.areas = [newArea];
+          await replySafe(msg, `✅ Área cambiada a *${areaNames[newArea]}*.\n\nEscribe *listo* para volver al resumen.`);
+          if (DEBUG) console.log('[EDIT_MULTI] area changed', { newArea });
+          return;
+        }
+      }
+    }
+    
+    // 2) CAMBIO DE LUGAR - patrones naturales
+    // Detecta: "en la playa", "es en 1205", "está en front", "1205", "playa", etc.
+    const lugarChangePatterns = [
+      /^(en|es en|esta en|está en|lugar|ubicacion|hab|habitacion)\s+(.+)$/i,
+      /^(\d{4})$/,  // Solo número de habitación
+      /^(villa\s*\d{1,2})$/i,
+      /^(front|front\s*desk|lobby|playa|nido|spa|gym|alberca|piscina|restaurante|awacate)$/i,
+    ];
+    
+    let lugarCandidate = null;
+    for (const pattern of lugarChangePatterns) {
+      const match = t.match(pattern);
+      if (match) {
+        lugarCandidate = match[2] || match[1] || match[0];
         break;
       }
     }
-
-    // También considerar si es una palabra corta (probablemente el nombre del área sola)
-    if (!areaCandidate && text.length <= 20 && text.split(/\s+/).length <= 2) {
-      areaCandidate = text.trim();
-    }
-
-    if (areaCandidate) {
-      const { normalizeAreaInput } = require('../ai/areaDetector');
-      const normalizedArea = normalizeAreaInput(areaCandidate);
-
-      if (normalizedArea) {
-        setDraftField(s, 'area_destino', normalizedArea);
-        addArea(s, normalizedArea);
-
-        const areaNames = {
-          'it': 'IT/Sistemas',
-          'man': 'Mantenimiento',
-          'ama': 'Ama de llaves',
-          'seg': 'Seguridad',
-          'rs': 'Room Service'
-        };
-
-        await replySafe(msg, `✅ Área actualizada a *${areaNames[normalizedArea] || normalizedArea.toUpperCase()}*\n\nEscribe *listo* para terminar o sigue editando.`);
+    
+    if (lugarCandidate) {
+      const result = await normalizeAndSetLugar(s, msg, lugarCandidate, { rawText: text });
+      if (result?.ok) {
+        await replySafe(msg, `✅ Lugar cambiado a *${s.draft.lugar}*.\n\nEscribe *listo* para volver al resumen.`);
+        if (DEBUG) console.log('[EDIT_MULTI] lugar changed', { newLugar: s.draft.lugar });
         return;
       }
     }
-
-    // Cualquier otro texto es nueva descripción
-    if (text.length >= 5) {
-      s.draft.descripcion = text;
-      s.draft.descripcion_original = text;
-      
-      // Re-detectar área
-      try {
-        const a = await detectArea(text);
-        if (a?.area) {
-          setDraftField(s, 'area_destino', a.area);
-          s.draft.areas = [a.area];
-        }
-      } catch {}
-      
-      await replySafe(msg, `✅ Descripción actualizada.\n\nEscribe *listo* para terminar o sigue editando.`);
+    
+    // 3) DESHACER último cambio
+    if (/^(deshacer|borra|borrar|quita|quitar|elimina|eliminar)\s*(eso|ese|esto|ultimo|[uú]ltimo|detalle|lo\s+(que|ultimo)|anterior)?$/i.test(t)) {
+      const lastDotIndex = (s.draft.descripcion || '').lastIndexOf('. ');
+      if (lastDotIndex > 0) {
+        const previousDesc = s.draft.descripcion.substring(0, lastDotIndex);
+        s.draft.descripcion = previousDesc;
+        await replySafe(msg, `✅ Último detalle eliminado.\n\nDescripción actual: _${previousDesc}_`);
+      } else {
+        await replySafe(msg, `⚠️ No hay detalles que borrar. Descripción: _${s.draft.descripcion || '(vacía)'}_`);
+      }
       return;
     }
     
-    await replySafe(msg, '🤔 Escribe una nueva descripción, "lugar [número]", o *listo* para terminar.');
+    // 4) REEMPLAZAR DESCRIPCIÓN - patrones explícitos
+    const descReplacePatterns = [
+      /^descripci[oó]n[:\s]+(.+)$/i,
+      /^(cambia|cambiar|reemplaza|reemplazar)\s+(la\s+)?descripci[oó]n[:\s]+(.+)$/i,
+      /^el\s+problema\s+es[:\s]+(.+)$/i,
+    ];
+    
+    for (const pattern of descReplacePatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        const newDesc = match[3] || match[1];
+        s.draft.descripcion = newDesc;
+        s.draft.descripcion_original = newDesc;
+        
+        // Re-detectar área
+        try {
+          const a = await detectArea(newDesc);
+          if (a?.area) {
+            s.draft.area_destino = a.area;
+            s.draft.areas = [a.area];
+          }
+        } catch {}
+        
+        await replySafe(msg, `✅ Descripción reemplazada:\n_"${newDesc}"_\n\nEscribe *listo* para volver.`);
+        if (DEBUG) console.log('[EDIT_MULTI] description replaced', { newDesc });
+        return;
+      }
+    }
+    
+    // 5) SI NO MATCHEÓ NINGÚN PATRÓN → Detectar automáticamente qué es
+    if (text.length >= 3) {
+      // ¿Parece un lugar? (número de 4 dígitos, villa, lugares conocidos)
+      const looksLikePlace = /^\d{4}$/.test(t) || /^villa\s*\d/i.test(t) || 
+                              /^(front|lobby|playa|nido|spa|gym|alberca|awacate)$/i.test(t);
+      
+      if (looksLikePlace) {
+        const result = await normalizeAndSetLugar(s, msg, text, { rawText: text });
+        if (result?.ok) {
+          await replySafe(msg, `✅ Lugar cambiado a *${s.draft.lugar}*.\n\nEscribe *listo* para volver.`);
+          if (DEBUG) console.log('[EDIT_MULTI] lugar auto-detected', { newLugar: s.draft.lugar });
+          return;
+        }
+      }
+      
+      // ¿Parece un área? (código o nombre de área solo)
+      const normalizedText = t.replace(/\s+/g, '');
+      if (areaMap[normalizedText] || areaMap[t]) {
+        const newArea = areaMap[normalizedText] || areaMap[t];
+        s.draft.area_destino = newArea;
+        s.draft.areas = [newArea];
+        await replySafe(msg, `✅ Área cambiada a *${areaNames[newArea]}*.\n\nEscribe *listo* para volver.`);
+        if (DEBUG) console.log('[EDIT_MULTI] area auto-detected', { newArea });
+        return;
+      }
+      
+      // Si no es lugar ni área → agregar como detalle a la descripción
+      const detalle = text.charAt(0).toUpperCase() + text.slice(1);
+      const currentDesc = s.draft.descripcion || '';
+      const separator = currentDesc.endsWith('.') || currentDesc.endsWith('!') || currentDesc.endsWith('?') ? ' ' : '. ';
+      s.draft.descripcion = currentDesc ? `${currentDesc}${separator}${detalle}` : detalle;
+      
+      await replySafe(msg, `✅ Detalle agregado:\n_"${s.draft.descripcion}"_\n\nEscribe *listo* para volver, o *deshacer* para borrar.`);
+      if (DEBUG) console.log('[EDIT_MULTI] detail added', { detail: detalle });
+      return;
+    }
+    
+    // Texto muy corto - mostrar ayuda
+    await replySafe(msg,
+      `🤔 No entendí. Puedes:\n\n` +
+      `• Escribir un *lugar* (ej: "1205", "playa", "en front")\n` +
+      `• Escribir un *área* (ej: "para IT", "mantenimiento")\n` +
+      `• Escribir un *detalle* para agregar\n` +
+      `• *deshacer* — borrar último detalle\n` +
+      `• *listo* — volver al resumen`
+    );
     return;
   } else if (s.mode === 'description_or_new' && text) {
     // ✅ NUEVO: Manejo de cuando el usuario agrega descripción que menciona otro lugar/área
@@ -3577,8 +4054,11 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
     if (msgType === 'area_change') {
       const newArea = extractExplicitArea(rawUser);
       if (newArea) {
+        // ✅ CRÍTICO: Cuando el usuario cambia el área explícitamente,
+        // REEMPLAZAR la lista de áreas, no agregar
+        // Esto evita que se envíe a grupos de áreas anteriores como CC
+        s.draft.areas = [newArea];  // ← Limpiar y dejar solo la nueva
         setDraftField(s, 'area_destino', newArea);
-        if (!s.draft.areas?.includes(newArea)) addArea(s, newArea);
         
         const areaNames = { it: 'IT/Sistemas', man: 'Mantenimiento', ama: 'Ama de Llaves', seg: 'Seguridad', rs: 'Room Service' };
         const preview = formatPreviewMessage(s.draft);

@@ -54,23 +54,23 @@ function levenshtein(a, b) {
   const bn = b.length;
   if (an === 0) return bn;
   if (bn === 0) return an;
-  
+
   const matrix = Array(bn + 1).fill(null).map(() => Array(an + 1).fill(null));
-  
+
   for (let i = 0; i <= an; i++) matrix[0][i] = i;
   for (let j = 0; j <= bn; j++) matrix[j][0] = j;
-  
+
   for (let j = 1; j <= bn; j++) {
     for (let i = 1; i <= an; i++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
       matrix[j][i] = Math.min(
-        matrix[j][i - 1] + 1,      // inserción
-        matrix[j - 1][i] + 1,      // eliminación
+        matrix[j][i - 1] + 1,       // inserción
+        matrix[j - 1][i] + 1,       // eliminación
         matrix[j - 1][i - 1] + cost // sustitución
       );
     }
   }
-  
+
   return matrix[bn][an];
 }
 
@@ -93,30 +93,30 @@ function levenshteinSimilarity(a, b) {
 function _fuzzySearch(text, { minSimilarity = 0.7, maxResults = 5 } = {}) {
   const N = _norm(text);
   if (!N || N.length < 3) return [];
-  
+
   const results = [];
   const seen = new Set();
-  
+
   for (const { term, item } of _phraseIndex) {
     // Evitar duplicados del mismo lugar
     if (seen.has(item.label)) continue;
-    
+
     // Solo comparar términos de longitud similar
     if (Math.abs(term.length - N.length) > 3) continue;
-    
+
     const sim = levenshteinSimilarity(N, term);
     if (sim >= minSimilarity) {
       seen.add(item.label);
-      results.push({ 
-        item, 
-        term, 
-        similarity: sim, 
+      results.push({
+        item,
+        term,
+        similarity: sim,
         via: 'fuzzy',
         score: Math.round(sim * 100)
       });
     }
   }
-  
+
   // Ordenar por similitud descendente
   results.sort((a, b) => b.similarity - a.similarity);
   return results.slice(0, maxResults);
@@ -203,47 +203,64 @@ function _scanRoomsFirst(text) {
   return { found: false, via: 'room', rooms, matched };
 }
 
+// ✅ NUEVO: helpers para boundaries robustos
+function _escapeRegExp(s) {
+  return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function _isBoundaryChar(ch) {
+  // En _norm ya solo hay letras/números/espacios,
+  // pero igual lo dejamos genérico.
+  return !ch || ch === ' ';
+}
+
+// ✅ Parche: evitar matches dentro de palabras (Spa dentro de space)
 function _scanPhrases(text, { maxCandidates = 10 } = {}) {
   const N = _norm(text);
-  
-  // ✅ NUEVO: Filtrar palabras genéricas sin contexto
+
+  // ✅ Filtrar palabras genéricas sin contexto
   const genericWords = ['habitacion', 'cuarto', 'lugar', 'sitio', 'area'];
   if (genericWords.some(w => N === w)) {
     if (DEBUG) console.log('[PLACE] skip generic word without context:', N);
-    return []; // No intentar matchear palabras genéricas solas
+    return [];
   }
-  
+
   const hitsMap = new Map(); // Deduplicar por label
-  
+
   for (const { term, item } of _phraseIndex) {
-    // ✅ FIX: Verificar que el término esté como palabra completa, no en medio de otra
-    // Esto evita que "it" matchee dentro de "necesito"
-    const idx = N.indexOf(term);
-    if (idx === -1) continue;
-    
-    // Verificar límites de palabra
-    const charBefore = idx > 0 ? N[idx - 1] : ' ';
-    const charAfter = idx + term.length < N.length ? N[idx + term.length] : ' ';
-    
-    // Si el término es muy corto (<=2 chars), debe ser palabra completa
-    if (term.length <= 2) {
-      const isWordBoundaryBefore = charBefore === ' ';
-      const isWordBoundaryAfter = charAfter === ' ';
-      if (!isWordBoundaryBefore || !isWordBoundaryAfter) {
-        continue; // "it" dentro de "necesito" → skip
+    // Buscamos ocurrencias; si un término puede repetirse, iteramos.
+    // Esto también ayuda a que boundary check sea correcto.
+    let startIndex = 0;
+    while (true) {
+      const idx = N.indexOf(term, startIndex);
+      if (idx === -1) break;
+
+      const before = idx > 0 ? N[idx - 1] : '';
+      const after = idx + term.length < N.length ? N[idx + term.length] : '';
+
+      // ✅ Regla clave:
+      // - Para términos cortos (<=4), exigir que sea palabra completa (boundary a ambos lados)
+      //   Ej: "spa" NO debe hacer match en "space"
+      // - Para términos largos, permitimos substring (sirve para frases)
+      if (term.length <= 4) {
+        const okBefore = _isBoundaryChar(before);
+        const okAfter = _isBoundaryChar(after);
+        if (!okBefore || !okAfter) {
+          startIndex = idx + term.length;
+          continue;
+        }
       }
-    }
-    
-    const score = term.length;
-    const label = item.label;
-    
-    // ✅ NUEVO: Solo mantener el mejor match por label
-    if (!hitsMap.has(label) || hitsMap.get(label).score < score) {
-      hitsMap.set(label, { item, via: 'phrase', term, score });
+
+      const score = term.length;
+      const label = item.label;
+
+      if (!hitsMap.has(label) || hitsMap.get(label).score < score) {
+        hitsMap.set(label, { item, via: 'phrase', term, score });
+      }
+
+      startIndex = idx + term.length;
     }
   }
-  
-  // Convertir a array y ordenar por score
+
   const hits = Array.from(hitsMap.values());
   hits.sort((a, b) => b.score - a.score);
   return hits.slice(0, maxCandidates);
@@ -338,7 +355,7 @@ async function _aiInformalPlace({ text, candidates, model = DEFAULT_AI_MODEL }) 
  */
 async function detectPlace(text, opts = {}) {
   const {
-    preferRoomsFirst = true,
+    preferRoomsFirst = true, // (se mantiene por compat)
     useAI = true,
     aiModel = DEFAULT_AI_MODEL,
     debugReturn = true
@@ -376,8 +393,7 @@ async function detectPlace(text, opts = {}) {
   if (!candidates.length && useAI) {
     const aiRes = await _aiInformalPlace({ text: raw, candidates: [], model: aiModel });
     if (aiRes?.found && aiRes.canonical_label) {
-      // Buscar en catálogo el label canónico
-      const match = _catalog.find(c => 
+      const match = _catalog.find(c =>
         _norm(c.label) === _norm(aiRes.canonical_label) ||
         (c.room_number && c.room_number === aiRes.room_number)
       );
@@ -422,12 +438,11 @@ async function detectPlace(text, opts = {}) {
     };
   }
 
-  // ✅ NUEVO: 5) Si no hay match, intentar fuzzy matching
+  // 5) Si no hay match, intentar fuzzy matching
   if (!candidates.length) {
     const fuzzyResults = _fuzzySearch(raw, { minSimilarity: 0.75, maxResults: 3 });
-    
+
     if (fuzzyResults.length > 0) {
-      // Si hay un match muy fuerte (>=90%), aceptarlo automáticamente
       if (fuzzyResults[0].similarity >= 0.90) {
         const c = fuzzyResults[0];
         const it = c.item;
@@ -436,10 +451,10 @@ async function detectPlace(text, opts = {}) {
           floor: it.floor || null,
           room: it.room_number || null
         };
-        if (DEBUG) console.log('[PLACE] fuzzy.auto_accept', { 
-          input: raw, 
-          match: it.label, 
-          similarity: Math.round(c.similarity * 100) + '%' 
+        if (DEBUG) console.log('[PLACE] fuzzy.auto_accept', {
+          input: raw,
+          match: it.label,
+          similarity: Math.round(c.similarity * 100) + '%'
         });
         return {
           found: true,
@@ -447,9 +462,9 @@ async function detectPlace(text, opts = {}) {
           via: 'fuzzy',
           score: c.score,
           meta,
-          candidates: debugReturn ? fuzzyResults.map(k => ({ 
-            label: k.item.label, 
-            via: 'fuzzy', 
+          candidates: debugReturn ? fuzzyResults.map(k => ({
+            label: k.item.label,
+            via: 'fuzzy',
             score: k.score,
             similarity: Math.round(k.similarity * 100) + '%'
           })) : undefined,
@@ -457,24 +472,23 @@ async function detectPlace(text, opts = {}) {
           fuzzyMatch: true
         };
       }
-      
-      // Si hay matches parciales (75-90%), retornar como sugerencias
-      if (DEBUG) console.log('[PLACE] fuzzy.suggestions', { 
-        input: raw, 
+
+      if (DEBUG) console.log('[PLACE] fuzzy.suggestions', {
+        input: raw,
         suggestions: fuzzyResults.map(r => `${r.item.label} (${Math.round(r.similarity * 100)}%)`)
       });
       return {
         found: false,
         reason: 'fuzzy_suggestions',
-        suggestions: fuzzyResults.map(k => ({ 
-          label: k.item.label, 
+        suggestions: fuzzyResults.map(k => ({
+          label: k.item.label,
           similarity: Math.round(k.similarity * 100),
           via: 'fuzzy'
         })),
-        candidates: debugReturn ? fuzzyResults.map(k => ({ 
-          label: k.item.label, 
-          via: 'fuzzy', 
-          score: k.score 
+        candidates: debugReturn ? fuzzyResults.map(k => ({
+          label: k.item.label,
+          via: 'fuzzy',
+          score: k.score
         })) : undefined,
         ai: { used: false }
       };
