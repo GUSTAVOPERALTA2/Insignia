@@ -1,4 +1,4 @@
- // modules/state/userDirectory.js
+// modules/state/userDirectory.js
 // Directorio de usuarios (admin/user + team) basado en /data/users.json
 //
 // Estructura esperada:
@@ -20,14 +20,23 @@ const USERS_PATH =
 
 let CACHE = new Map(); // waId -> { waId, nombre, cargo, rol, team }
 
+// Normaliza ID preservando @c.us para match exacto con keys de users.json
 function normalizeId(id) {
   if (!id) return null;
   return String(id).trim().toLowerCase();
 }
 
+// Extrae solo dígitos para comparación flexible
+function extractDigits(id) {
+  if (!id) return null;
+  return String(id).replace(/\D/g, '');
+}
+
 function loadUsers() {
   try {
-    const raw = fs.readFileSync(USERS_PATH, 'utf8');
+    let raw = fs.readFileSync(USERS_PATH, 'utf8');
+    // Quitar BOM si existe
+    raw = raw.replace(/^\uFEFF/, '');
     const data = JSON.parse(raw);
 
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
@@ -46,6 +55,7 @@ function loadUsers() {
         cargo: rec.cargo || null,
         rol: rec.rol || 'user',     // admin | user
         team: rec.team || null,     // it | man | ama | exp | ...
+        titulo: rec.titulo || null,
       });
     }
 
@@ -66,7 +76,27 @@ function reloadUsers() {
 function getUser(chatId) {
   const key = normalizeId(chatId);
   if (!key) return null;
-  return CACHE.get(key) || null;
+  
+  // 1. Match exacto (incluye @c.us)
+  if (CACHE.has(key)) {
+    return CACHE.get(key);
+  }
+  
+  // 2. Búsqueda flexible por dígitos
+  const inputDigits = extractDigits(chatId);
+  if (!inputDigits) return null;
+  
+  for (const [cachedKey, user] of CACHE.entries()) {
+    const cachedDigits = extractDigits(cachedKey);
+    
+    // Match exacto de dígitos
+    if (cachedDigits === inputDigits) return user;
+    
+    // Match últimos 10 dígitos (sin código de país)
+    if (inputDigits.slice(-10) === cachedDigits.slice(-10)) return user;
+  }
+  
+  return null;
 }
 
 function isKnownUser(chatId) {

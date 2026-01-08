@@ -49,6 +49,10 @@ const { classifyNiGuard } = require('./niGuard'); // NEW GUARD
 
 const DEBUG = (process.env.VICEBOT_DEBUG || '1') === '1';
 
+// NOTA: El sistema de control de acceso está centralizado en:
+// /modules/state/userAccess.js (checkAccess)
+// /modules/core/coreMessageRouter.js (gate principal)
+
 // ✅ NUEVO: Generar respuesta contextual con IA para mensajes no relacionados con incidencias
 async function generateContextualResponse(userMessage) {
   try {
@@ -237,7 +241,8 @@ function isSessionBareForNI(session) {
   // ✅ FIX: Considerar modos especiales que requieren interacción
   const isInSpecialMode = ['different_problem', 'description_or_new', 'context_switch', 
                            'multiple_tickets', 'edit_multiple_ticket', 'confirm_batch',
-                           'choose_area_multi', 'edit_batch_ticket'].includes(session.mode);
+                           'choose_area_multi', 'edit_batch_ticket',
+                           'followup_decision', 'followup_place_decision'].includes(session.mode);
   return !hasStruct && !hasMedia && !hasVision && !hasBatchTickets && !hasMultipleTickets && !hasPendingData && !isInSpecialMode;
 }
 
@@ -301,6 +306,76 @@ function isNo(text) {
 
 function isShortAmbiguousNumber(text) {
   return /^\d{1,3}$/.test(String(text).trim());
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * VB-007/009 FIX: Detectar texto vago que NO debería generar preview
+ * ════════════════════════════════════════════════════════════════════════ */
+const VAGUE_PATTERNS = [
+  // Frases muy genéricas sin especificar qué ni dónde
+  /^(no\s+sirve|no\s+funciona|no\s+enciende|no\s+prende|falla|fallo)$/i,
+  /^(mira\s+(esto|eso)?|ve\s+(esto|eso)?|checa\s+(esto|eso)?)$/i,
+  /^(ayuda|help|auxilio|socorro)$/i,
+  /^(necesito\s+ayuda|me\s+ayudan?)$/i,
+  /^(revisar?|checar?|verificar?)$/i,
+  /^(hay\s+un\s+problema|tengo\s+un\s+problema)$/i,
+  /^(urge|urgente)$/i,
+  /^(hola|buenas?|buenos?\s+d[ií]as?|buenas?\s+(tardes?|noches?))$/i,  // Saludos solos
+];
+
+// Palabras que indican problema concreto (no vago)
+const CONCRETE_PROBLEM_INDICATORS = [
+  /\b(aire|a\/c|clima|minisplit)\b/i,
+  /\b(luz|foco|l[aá]mpara|apag[oó]n)\b/i,
+  /\b(agua|fuga|gotea|gotera|regadera|lavabo|wc|inodoro)\b/i,
+  /\b(tv|televisi[oó]n|control|remoto)\b/i,
+  /\b(internet|wifi|se[ñn]al)\b/i,
+  /\b(puerta|ventana|cortina|persiana|cerradura|chapa)\b/i,
+  /\b(elevador|ascensor)\b/i,
+  /\b(comida|alimentos|room\s*service)\b/i,
+  /\b(toalla|s[aá]bana|almohada|cobija)\b/i,
+  /\b(basura|limpieza|sucio|sucia)\b/i,
+  /\b(ruido|ruidoso|vecino)\b/i,
+  /\b(olor|huele|apesta)\b/i,
+  /\b(computadora|laptop|impresora|sistema)\b/i,
+  /\b(tel[eé]fono|l[ií]nea)\b/i,
+];
+
+function isVagueText(text) {
+  if (!text) return true;
+  const t = text.trim();
+  
+  // Muy corto = vago (menos de 8 caracteres sin lugar)
+  if (t.length < 8) return true;
+  
+  // Si coincide con patrón vago explícito
+  if (VAGUE_PATTERNS.some(rx => rx.test(t))) {
+    // Pero verificar si tiene indicador concreto adicional
+    if (!CONCRETE_PROBLEM_INDICATORS.some(rx => rx.test(t))) {
+      return true;
+    }
+  }
+  
+  // Si es solo "no sirve" o "no funciona" sin especificar QUÉ
+  if (/^no\s+(sirve|funciona|enciende|prende)\b/i.test(t) && t.length < 20) {
+    // Verificar si especifica qué no sirve
+    if (!CONCRETE_PROBLEM_INDICATORS.some(rx => rx.test(t))) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+function hasMinimumIncidentInfo(draft) {
+  // Necesita: descripción no-vaga Y (lugar O área)
+  const desc = draft?.descripcion || draft?.descripcion_original || '';
+  const hasGoodDesc = desc.length >= 15 && !isVagueText(desc);
+  const hasLocation = !!(draft?.lugar);
+  const hasArea = !!(draft?.area_destino);
+  
+  // Para mostrar preview necesitamos al menos descripción decente
+  return hasGoodDesc;
 }
 
 /* ──────────────────────────────
@@ -391,6 +466,20 @@ function classifyConfirmMessage(text, draft = {}) {
   if (isNo(text)) return 'cancel';
   
   // ═══════════════════════════════════════════════════════════════
+  // VB-015 FIX: DETAIL_FOLLOWUP - "también...", "además...", "y aparte..."
+  // Detectar ANTES de otros tipos para no confundir con description_change
+  // ═══════════════════════════════════════════════════════════════
+  const followupPatterns = [
+    /^(tambi[eé]n|adem[aá]s|y\s+tambi[eé]n|aparte|y\s+aparte|otro\s+detalle|tambi[eé]n\s+hay)/i,
+    /^(ah,?\s+)?(y\s+)?tambi[eé]n\b/i,
+    /^(otra\s+cosa|y\s+otra\s+cosa)\b/i,
+  ];
+  
+  if (followupPatterns.some(rx => rx.test(t))) {
+    return 'detail_followup';
+  }
+  
+  // ═══════════════════════════════════════════════════════════════
   // COMANDOS DE EDICIÓN (editar, borrar, cambiar descripción)
   // ═══════════════════════════════════════════════════════════════
   // Detectar "editar" solo o con target
@@ -412,6 +501,24 @@ function classifyConfirmMessage(text, draft = {}) {
   // CAMBIO EXPRESS DE LUGAR (mensajes cortos con patrón específico)
   // ═══════════════════════════════════════════════════════════════
   // Patrones: "en X", "es en X", "cambia lugar a X", "el lugar es X"
+  
+  // ✅ FIX CRÍTICO: Si el mensaje contiene descripción de problema + lugar,
+  // NO debe ser clasificado como place_change sino como new_incident_candidate
+  const problemWords = /\b(no\s+(funciona|sirve|enciende|prende|tiene)|roto|rota|dañado|dañada|averiado|falla|fuga|gotea|necesita|requiere|falta|sucio|sucia|apagado|apagada)\b/i;
+  const requestWords = /\b(traer|traigan|llevar|cambiar|revisar|arreglar|reparar|limpiar|necesito|ocupo|ayuda|ayudan|necesitamos)\b/i;
+  const deviceWords = /\b(tv|television|impresora|internet|wifi|aire|clima|luz|foco|agua|regadera|control|puerta|cerradura)\b/i;
+  
+  const looksLikeProblem = problemWords.test(text) || 
+                           (deviceWords.test(text) && requestWords.test(text)) ||
+                           (len > 25 && requestWords.test(text));
+  
+  // Si parece un problema completo con lugar diferente, debe ser manejado como nuevo incidente potencial
+  const hasPlace = /\b(en|lugar|hab)\b.*\d{4}/i.test(t) || /\d{4}/.test(t);
+  if (looksLikeProblem && hasPlace && len > 20) {
+    // Es un problema completo con lugar - marcar para que el handler decida
+    return 'new_incident_candidate';
+  }
+  
   const placeChangePatterns = [
     /^en\s+\S+$/i,                                    // "en nido"
     /^en\s+(la\s+)?hab(itacion|itación)?\s*\d{4}$/i, // "en habitación 2102"
@@ -476,11 +583,7 @@ function classifyConfirmMessage(text, draft = {}) {
   // CAMBIO/ADICIÓN DE DESCRIPCIÓN (mensajes más largos o descriptivos)
   // ═══════════════════════════════════════════════════════════════
   // Si el mensaje es largo y/o contiene palabras que describen un problema
-  const problemWords = /\b(no\s+(funciona|sirve|enciende|prende|tiene)|roto|rota|dañado|dañada|averiado|falla|fuga|gotea|necesita|requiere|falta|sucio|sucia|apagado|apagada)\b/i;
-  const requestWords = /\b(traer|traigan|llevar|cambiar|revisar|arreglar|reparar|limpiar|necesito|ocupo|ayuda|ayudan|necesitamos)\b/i;
-  
-  // ✅ FIX: También detectar si menciona dispositivos/cosas
-  const deviceWords = /\b(tv|television|impresora|internet|wifi|aire|clima|luz|foco|agua|regadera|control|puerta|cerradura)\b/i;
+  // (Las variables problemWords, requestWords, deviceWords ya fueron definidas arriba)
   
   if (problemWords.test(text)) {
     return 'description_change';
@@ -698,6 +801,11 @@ const RELAX_MARGIN    = 1.25;
  * Retorna: { ok: boolean, inCatalog: boolean, label: string } o false
  * ────────────────────────────── */
 async function normalizeAndSetLugar(session, msg, candidate, { force = true, rawText = '' } = {}) {
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VB-006 FIX: Guardar input original para mostrar si hubo corrección
+  // ═══════════════════════════════════════════════════════════════════════════
+  const originalInput = (candidate || rawText || '').trim();
+  
   // 1) Primero: buscar señales fuertes (habitación 4 dígitos, villa)
   const strong = findStrongPlaceSignals(rawText);
   if (strong) {
@@ -710,8 +818,17 @@ async function normalizeAndSetLugar(session, msg, candidate, { force = true, raw
         if (best.meta?.building) setDraftField(session, 'building', best.meta.building);
         if (best.meta?.floor)    setDraftField(session, 'floor', best.meta.floor);
         if (best.meta?.room)     setDraftField(session, 'room', best.meta.room);
+        
+        // VB-006: Detectar si hubo corrección
+        const wasCorrected = originalInput && norm(originalInput) !== norm(best.label) && 
+                             !norm(best.label).includes(norm(originalInput));
+        if (wasCorrected) {
+          session._lugarCorrectedFrom = originalInput;
+          if (DEBUG) console.log('[PLACE] VB-006: lugar corrected', { from: originalInput, to: best.label });
+        }
+        
         // ✅ inCatalog indica si realmente está en el catálogo
-        return { ok: true, inCatalog: best.via !== 'room_pattern', label: best.label };
+        return { ok: true, inCatalog: best.via !== 'room_pattern', label: best.label, correctedFrom: wasCorrected ? originalInput : null };
       }
       // ✅ Si hay señal fuerte pero no está en catálogo, aún así aceptar el valor
       // (ej: habitación 9999 que no existe pero es formato válido)
@@ -764,7 +881,16 @@ async function normalizeAndSetLugar(session, msg, candidate, { force = true, raw
       if (normPlace.meta?.building) setDraftField(session, 'building', normPlace.meta.building);
       if (normPlace.meta?.floor)    setDraftField(session, 'floor', normPlace.meta.floor);
       if (normPlace.meta?.room)     setDraftField(session, 'room', normPlace.meta.room);
-      return { ok: true, inCatalog: normPlace.via !== 'room_pattern', label: normPlace.label };
+      
+      // VB-006: Detectar si hubo corrección
+      const wasCorrected = originalInput && norm(originalInput) !== norm(normPlace.label) &&
+                           !norm(normPlace.label).includes(norm(originalInput));
+      if (wasCorrected) {
+        session._lugarCorrectedFrom = originalInput;
+        if (DEBUG) console.log('[PLACE] VB-006: lugar corrected', { from: originalInput, to: normPlace.label });
+      }
+      
+      return { ok: true, inCatalog: normPlace.via !== 'room_pattern', label: normPlace.label, correctedFrom: wasCorrected ? originalInput : null };
     }
     
     // ✅ NUEVO: Si hay sugerencias fuzzy, retornarlas para que el usuario elija
@@ -1122,12 +1248,59 @@ function generateFolio(areaCode) {
   return `${prefix}-${numStr}`;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * VB-002 FIX: Hash del draft para idempotencia
+ * ════════════════════════════════════════════════════════════════════════ */
+function generateDraftHash(draft) {
+  if (!draft) return null;
+  
+  // Crear un string único basado en los campos importantes del draft
+  const keyFields = [
+    draft.descripcion || '',
+    draft.descripcion_original || '',
+    draft.lugar || '',
+    draft.area_destino || '',
+    (draft.areas || []).join(',')
+  ].join('|');
+  
+  // Hash simple (djb2)
+  let hash = 5381;
+  for (let i = 0; i < keyFields.length; i++) {
+    hash = ((hash << 5) + hash) + keyFields.charCodeAt(i);
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  
+  return 'dh_' + Math.abs(hash).toString(36);
+}
+
 /* ──────────────────────────────
  * Finalizar y despachar
  * ────────────────────────────── */
 async function finalizeAndDispatch({ client, msg, session }) {
   const s = session;
   const chatId = msg.from;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VB-002 FIX: Idempotencia - evitar tickets duplicados con "sí sí"
+  // ═══════════════════════════════════════════════════════════════════════════
+  
+  // Generar hash del draft actual
+  const draftHash = generateDraftHash(s.draft);
+  
+  // Verificar si ya confirmamos este exact draft
+  if (s._pendingConfirm && s._pendingConfirm.consumed && s._pendingConfirm.draftHash === draftHash) {
+    const existingFolio = s._pendingConfirm.createdFolio || s._lastCreatedTicket?.folio;
+    if (existingFolio) {
+      if (DEBUG) console.log('[NI] VB-002: duplicate confirmation blocked', { draftHash, folio: existingFolio });
+      await replySafe(msg, `✅ Ya creé el ticket *${existingFolio}*.\n\nSi necesitas reportar algo más, cuéntame.`);
+      return;
+    }
+  }
+  
+  // Marcar como en proceso (para bloquear confirmaciones paralelas)
+  if (!s._pendingConfirm) s._pendingConfirm = {};
+  s._pendingConfirm.draftHash = draftHash;
+  s._pendingConfirm.processing = true;
 
   // Generar folio con formato de área
   const folio = generateFolio(s.draft.area_destino);
@@ -1146,14 +1319,22 @@ async function finalizeAndDispatch({ client, msg, session }) {
     if (DEBUG) console.log('[NI] persisted', { id: incidentId, folio });
   } catch (e) {
     if (DEBUG) console.warn('[NI] persist.err', e?.message || e);
+    s._pendingConfirm.processing = false; // Desbloquear en caso de error
   }
 
   // Si no se pudo persistir, abortar
   if (!incidentId) {
     if (DEBUG) console.warn('[NI] no incidentId after persist, aborting dispatch');
+    s._pendingConfirm.processing = false;
     await replySafe(msg, '❌ Error al guardar el ticket. Intenta de nuevo.');
     return;
   }
+  
+  // ✅ VB-002: Marcar confirmación como consumida INMEDIATAMENTE después de persistir
+  s._pendingConfirm.consumed = true;
+  s._pendingConfirm.createdFolio = folio;
+  s._pendingConfirm.createdTicketId = incidentId;
+  s._pendingConfirm.createdAt = Date.now();
 
   // Guardar adjuntos
   if (Array.isArray(s._pendingMedia) && s._pendingMedia.length) {
@@ -1234,12 +1415,24 @@ async function finalizeAndDispatch({ client, msg, session }) {
   // Confirmar al usuario
   await replySafe(msg, `✅ *Ticket creado:* ${folio}\n\nTe avisaré cuando haya novedades.`);
 
-  // Limpiar sesión
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VB-012 FIX: Guardar referencia al último ticket creado para auto-asociar adjuntos
+  // ═══════════════════════════════════════════════════════════════════════════
+  s._lastCreatedTicket = {
+    id: incidentId,
+    folio: folio,
+    createdAt: Date.now(),
+    chatId: chatId,
+    area_destino: s.draft.area_destino
+  };
+
+  // Limpiar sesión pero mantener _lastCreatedTicket para ventana de 10 min
   closeSession(s);
   s._pendingMedia = [];
   s._visionAreaHints = null;
   s._mediaBatch = null;
   s._askedPlaceMuteUntil = 0;
+  // NO limpiar _lastCreatedTicket ni _pendingConfirm - los necesitamos para VB-002 y VB-012
   
   resetSession(chatId);
   if (DEBUG) console.log('[NI] closed: dispatched', { folio });
@@ -1705,6 +1898,9 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
   const chatId = msg.from;
   const text = (msg.body || '').trim();
 
+  // NOTA: La validación de acceso ahora está centralizada en coreMessageRouter.js
+  // Este handler solo se ejecuta si el usuario ya pasó el gate de seguridad
+
   try {
     ensureReady();
   } catch (e) {
@@ -1718,6 +1914,112 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
   }
 
   const s = ensureSession(chatId);
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VB-014 FIX: Gate para "sí/no" sueltos cuando NO hay nada que confirmar
+  // Evita que "sí" fuera de orden cause comportamiento extraño
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (text && !msg.hasMedia) {
+    const isYesToken = isYes(text);
+    const isNoToken = isNo(text);
+    
+    // Solo "sí" o "no" sueltos (no frases largas)
+    const isShortYesNo = (isYesToken || isNoToken) && text.length < 15;
+    
+    // Estados que esperan confirmación
+    const expectsConfirmation = ['confirm', 'preview', 'confirm_batch', 'multiple_tickets', 
+                                  'different_problem', 'description_or_new', 'context_switch',
+                                  'choose_area_multi', 'choose_place_from_candidates',
+                                  'followup_decision', 'followup_place_decision'].includes(s.mode);
+    
+    // Si dice "sí/no" pero NO estamos esperando confirmación
+    if (isShortYesNo && !expectsConfirmation && isSessionBareForNI(s)) {
+      if (DEBUG) console.log('[NI] VB-014: YES/NO without pending confirmation', { text, mode: s.mode });
+      
+      if (isYesToken) {
+        await replySafe(msg, 
+          '🤔 No hay nada pendiente que confirmar.\n\n' +
+          'Si necesitas reportar algo, cuéntame *qué problema* hay y *dónde está*.\n\n' +
+          '_Ejemplo: "No funciona el aire en hab 1205"_'
+        );
+      } else {
+        // "no" suelto - simplemente ignorar o dar guía breve
+        await replySafe(msg, 
+          '👋 Si necesitas reportar algo, solo dime qué problema hay y dónde.'
+        );
+      }
+      return;
+    }
+  }
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VB-012 FIX: Auto-asociar adjuntos a ticket reciente (ventana de 10 min)
+  // Si el usuario envía foto después de crear un ticket, asociarla al ticket
+  // ═══════════════════════════════════════════════════════════════════════════
+  const POST_TICKET_WINDOW_MS = 10 * 60 * 1000; // 10 minutos
+  
+  if (msg.hasMedia && s._lastCreatedTicket) {
+    const ticketAge = Date.now() - s._lastCreatedTicket.createdAt;
+    
+    if (ticketAge < POST_TICKET_WINDOW_MS) {
+      // Está dentro de la ventana - preguntar o auto-asociar
+      const lastTicket = s._lastCreatedTicket;
+      
+      try {
+        const media = await msg.downloadMedia();
+        
+        if (media?.mimetype?.startsWith('image/')) {
+          // Guardar la imagen
+          if (!fs.existsSync(ATTACH_DIR)) fs.mkdirSync(ATTACH_DIR, { recursive: true });
+          
+          const ext = (media.mimetype || '').split('/')[1] || 'jpg';
+          const timestamp = Date.now();
+          const fname = `${lastTicket.folio}_post_${timestamp}.${ext}`;
+          const fpath = path.join(ATTACH_DIR, fname);
+          fs.writeFileSync(fpath, Buffer.from(media.data, 'base64'));
+          
+          // Agregar a la BD
+          await appendIncidentAttachments(lastTicket.id, [{
+            filename: fname,
+            url: `${ATTACH_BASEURL}/${fname}`,
+            mimetype: media.mimetype
+          }]);
+          
+          // Notificar al grupo
+          try {
+            const cfg = await loadGroupsConfig();
+            const { primaryId } = resolveTargetGroups(
+              { area_destino: lastTicket.area_destino, areas: [lastTicket.area_destino] },
+              cfg
+            );
+            
+            if (primaryId) {
+              const { MessageMedia } = require('whatsapp-web.js');
+              const mediaToSend = new MessageMedia(media.mimetype, media.data, fname);
+              await sendIncidentToGroups(client, {
+                message: `📎 *${lastTicket.folio}* — Foto adicional`,
+                primaryId,
+                ccIds: [],
+                media: mediaToSend
+              });
+              if (DEBUG) console.log('[NI] VB-012: post-ticket attachment forwarded to group', { folio: lastTicket.folio });
+            }
+          } catch (e) {
+            if (DEBUG) console.warn('[NI] VB-012: forward to group error', e?.message);
+          }
+          
+          await replySafe(msg, `📎 Foto agregada a *${lastTicket.folio}* y enviada al equipo.`);
+          if (DEBUG) console.log('[NI] VB-012: attachment added to recent ticket', { 
+            folio: lastTicket.folio, 
+            ticketAge: Math.round(ticketAge / 1000) + 's' 
+          });
+          return;
+        }
+      } catch (e) {
+        if (DEBUG) console.warn('[NI] VB-012: attachment processing error', e?.message);
+      }
+    }
+  }
   
   // ═══════════════════════════════════════════════════════════════════════════
   // HANDLERS DE MODOS ESPECIALES - Deben ejecutarse ANTES del filtro de bare session
@@ -2922,6 +3224,65 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
           await replySafe(msg, '📸 Recibí la foto. Ya le eché un ojo — si me cuentas en una frase qué pasó, afino el reporte. 😉');
           batch.sentAck = true;
         }
+      } else if (mime.startsWith('audio/') || mime.includes('ogg') || mime.includes('opus')) {
+        // ═══════════════════════════════════════════════════════════════════════
+        // VB-010 FIX: Manejo de notas de voz
+        // ═══════════════════════════════════════════════════════════════════════
+        if (DEBUG) console.log('[NI] audio received, cannot process', { mimetype: mime });
+        await replySafe(msg,
+          '🎤 No puedo procesar notas de voz por el momento.\n\n' +
+          'Por favor, *escríbeme* el problema y el lugar.\n\n' +
+          '_Ejemplo: "No funciona el aire en hab 1205"_'
+        );
+        return;
+      } else if (mime.includes('document') || mime.includes('pdf') || mime.includes('word') || 
+                 mime.includes('excel') || mime.includes('spreadsheet') || mime.includes('text/')) {
+        // ═══════════════════════════════════════════════════════════════════════
+        // VB-011 FIX: Manejo de documentos sin texto
+        // ═══════════════════════════════════════════════════════════════════════
+        if (DEBUG) console.log('[NI] document received', { mimetype: mime, hasText: !!text });
+        
+        // Guardar documento como adjunto pendiente
+        s._pendingMedia = Array.isArray(s._pendingMedia) ? s._pendingMedia : [];
+        if (s._pendingMedia.length < 6) {
+          s._pendingMedia.push({
+            mimetype: media.mimetype,
+            data: media.data,
+            filename: media.filename || 'documento',
+            caption: null
+          });
+        }
+        
+        if (!text) {
+          await replySafe(msg,
+            '📄 Recibí el documento.\n\n' +
+            '¿De qué problema se trata y dónde está?\n\n' +
+            '_Ejemplo: "Aquí está el reporte de la fuga en hab 1205"_'
+          );
+          return;
+        }
+        // Si tiene texto, continuar con el flujo normal
+      } else if (mime.startsWith('video/')) {
+        // Videos - guardar pero pedir contexto
+        if (DEBUG) console.log('[NI] video received', { mimetype: mime });
+        
+        s._pendingMedia = Array.isArray(s._pendingMedia) ? s._pendingMedia : [];
+        if (s._pendingMedia.length < 6) {
+          s._pendingMedia.push({
+            mimetype: media.mimetype,
+            data: media.data,
+            filename: media.filename || 'video',
+            caption: null
+          });
+        }
+        
+        if (!text) {
+          await replySafe(msg,
+            '🎥 Recibí el video.\n\n' +
+            'Cuéntame: ¿qué problema muestra y dónde está?'
+          );
+          return;
+        }
       } else {
         if (DEBUG) console.log('[VISION] skip non-image', { mimetype: mime });
       }
@@ -3217,6 +3578,490 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
       '• O escribe el *lugar* para continuar'
     );
     return;
+  } else if (s.mode === 'edit_menu' && text) {
+    // ═══════════════════════════════════════════════════════════════
+    // Handler para menú de edición: ÁREA DIFERENTE detectada
+    // Opciones: 1=ambos, 2=editar actual, 3=nuevo, cancelar
+    // ═══════════════════════════════════════════════════════════════
+    const t = norm(text);
+    const conflictText = s._conflictNewText || '';
+    const conflictArea = s._conflictNewArea || null;
+    const conflictPlace = s._conflictNewPlace || null;
+    
+    // Opción 1: Enviar AMBOS tickets
+    if (/^1\b/.test(t) || /^ambos\b/i.test(t)) {
+      // Primero enviar el ticket actual
+      if (hasRequiredDraft(s.draft)) {
+        try {
+          const savedCurrent = await finalizeAndPersist(s, msg, client, { quiet: true });
+          if (savedCurrent) {
+            await replySafe(msg, `✅ Ticket 1 enviado: *${savedCurrent.folio}* → ${areaLabel(s.draft.area_destino)}`);
+          }
+        } catch (e) {
+          if (DEBUG) console.warn('[EDIT-MENU] error sending current ticket:', e?.message);
+        }
+      }
+      
+      // Luego crear el nuevo ticket
+      s.draft = {};
+      s.draft.descripcion_original = conflictText;
+      s.draft.descripcion = conflictText;
+      s._lugarNotInCatalog = false;
+      
+      // Detectar lugar del nuevo
+      if (conflictPlace) {
+        try {
+          const placeRes = await detectPlace(conflictPlace, { preferRoomsFirst: true });
+          if (placeRes?.found) {
+            setDraftField(s, 'lugar', placeRes.label);
+          } else {
+            setDraftField(s, 'lugar', conflictPlace);
+            s._lugarNotInCatalog = true;
+          }
+        } catch {
+          setDraftField(s, 'lugar', conflictPlace);
+        }
+      } else {
+        // Intentar extraer lugar del texto
+        try {
+          const placeRes = await detectPlace(conflictText, { preferRoomsFirst: true });
+          if (placeRes?.found) {
+            setDraftField(s, 'lugar', placeRes.label);
+          }
+        } catch {}
+      }
+      
+      // Asignar área
+      if (conflictArea) {
+        setDraftField(s, 'area_destino', conflictArea);
+        addArea(s, conflictArea);
+      }
+      
+      // Limpiar conflicto
+      s._conflictNewText = null;
+      s._conflictNewArea = null;
+      s._conflictNewPlace = null;
+      
+      await refreshIncidentDescription(s, conflictText);
+      
+      let preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '📝 *Ticket 2 (nuevo):*\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Opción 2: Editar ticket ACTUAL (descartar nuevo)
+    if (/^2\b/.test(t) || /^actual\b/i.test(t) || /^editar\b/i.test(t)) {
+      s._conflictNewText = null;
+      s._conflictNewArea = null;
+      s._conflictNewPlace = null;
+      
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '✅ Continuamos con el ticket actual (nuevo descartado):\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Opción 3: Crear ticket NUEVO (descartar actual)
+    if (/^3\b/.test(t) || /^nuevo\b/i.test(t)) {
+      // Limpiar draft y empezar con el nuevo
+      s.draft = {};
+      s.draft.descripcion_original = conflictText;
+      s.draft.descripcion = conflictText;
+      s._lugarNotInCatalog = false;
+      
+      // Detectar lugar
+      if (conflictPlace) {
+        try {
+          const placeRes = await detectPlace(conflictPlace, { preferRoomsFirst: true });
+          if (placeRes?.found) {
+            setDraftField(s, 'lugar', placeRes.label);
+          } else {
+            setDraftField(s, 'lugar', conflictPlace);
+            s._lugarNotInCatalog = true;
+          }
+        } catch {
+          setDraftField(s, 'lugar', conflictPlace);
+        }
+      } else {
+        try {
+          const placeRes = await detectPlace(conflictText, { preferRoomsFirst: true });
+          if (placeRes?.found) {
+            setDraftField(s, 'lugar', placeRes.label);
+          }
+        } catch {}
+      }
+      
+      // Asignar área
+      if (conflictArea) {
+        setDraftField(s, 'area_destino', conflictArea);
+        addArea(s, conflictArea);
+      }
+      
+      s._conflictNewText = null;
+      s._conflictNewArea = null;
+      s._conflictNewPlace = null;
+      
+      await refreshIncidentDescription(s, conflictText);
+      
+      let preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '✅ Ticket nuevo iniciado (anterior descartado):\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Cancelar
+    if (/^cancelar?\b/i.test(t) || /^no\b/i.test(t)) {
+      closeSession(s);
+      resetSession(chatId);
+      s._conflictNewText = null;
+      s._conflictNewArea = null;
+      s._conflictNewPlace = null;
+      await replySafe(msg, '❌ Tickets cancelados. Si necesitas reportar algo, solo escríbeme.');
+      return;
+    }
+    
+    // No entendí
+    await replySafe(msg, 
+      '🤔 No entendí. Responde con:\n' +
+      '• *1* — Enviar ambos tickets\n' +
+      '• *2* — Continuar con el actual\n' +
+      '• *3* — Crear ticket nuevo\n' +
+      '• *cancelar* — Descartar todo'
+    );
+    return;
+  } else if (s.mode === 'edit_menu_place' && text) {
+    // ═══════════════════════════════════════════════════════════════
+    // Handler para menú de edición: LUGAR DIFERENTE detectado (misma área)
+    // Opciones: 1=nuevo ticket, 2=reemplazar lugar, cancelar
+    // ═══════════════════════════════════════════════════════════════
+    const t = norm(text);
+    const conflictText = s._conflictNewText || '';
+    const conflictArea = s._conflictNewArea || null;
+    const conflictPlace = s._conflictNewPlace || null;
+    
+    // Opción 1: Crear ticket NUEVO (además del actual) → Menú de múltiples tickets
+    if (/^1\b/.test(t) || /^nuevo\b/i.test(t)) {
+      // Guardar ticket actual como ticket 1
+      const currentTicket = {
+        ...s.draft,
+        _ticketNum: 1
+      };
+      
+      // Crear ticket 2 con el nuevo problema
+      let newTicketLugar = null;
+      if (conflictPlace) {
+        try {
+          const placeRes = await detectPlace(conflictPlace, { preferRoomsFirst: true });
+          newTicketLugar = placeRes?.found ? placeRes.label : conflictPlace;
+        } catch {
+          newTicketLugar = conflictPlace;
+        }
+      } else {
+        try {
+          const placeRes = await detectPlace(conflictText, { preferRoomsFirst: true });
+          if (placeRes?.found) {
+            newTicketLugar = placeRes.label;
+          }
+        } catch {}
+      }
+      
+      const newTicket = {
+        descripcion: conflictText,
+        descripcion_original: conflictText,
+        lugar: newTicketLugar,
+        area_destino: conflictArea || s.draft.area_destino,
+        areas: [conflictArea || s.draft.area_destino],
+        _ticketNum: 2
+      };
+      
+      // Inicializar array de múltiples tickets
+      s._multipleTickets = [currentTicket, newTicket];
+      
+      // Limpiar conflicto
+      s._conflictNewText = null;
+      s._conflictNewArea = null;
+      s._conflictNewPlace = null;
+      
+      // Mostrar menú de múltiples tickets
+      let msg1 = `📝 *Ticket 1* (${areaLabel(currentTicket.area_destino)}):\n`;
+      msg1 += `   _"${(currentTicket.descripcion || '').substring(0, 50)}${(currentTicket.descripcion || '').length > 50 ? '...' : ''}"_\n`;
+      msg1 += `   📍 ${currentTicket.lugar || 'Sin lugar'}\n\n`;
+      
+      let msg2 = `📝 *Ticket 2* (${areaLabel(newTicket.area_destino)}):\n`;
+      msg2 += `   _"${(newTicket.descripcion || '').substring(0, 50)}${(newTicket.descripcion || '').length > 50 ? '...' : ''}"_\n`;
+      msg2 += `   📍 ${newTicket.lugar || 'Sin lugar'}\n\n`;
+      
+      await replySafe(msg,
+        '✅ *Se crearon 2 tickets:*\n\n' +
+        msg1 + msg2 +
+        '¿Qué deseas hacer?\n' +
+        '• *enviar* — Enviar ambos tickets\n' +
+        '• *editar 1* — Editar ticket 1\n' +
+        '• *editar 2* — Editar ticket 2\n' +
+        '• *cancelar* — Descartar ambos'
+      );
+      
+      setMode(s, 'multiple_tickets');
+      if (DEBUG) console.log('[EDIT-MENU-PLACE] created 2 tickets, showing multiple_tickets menu');
+      return;
+    }
+    
+    // Opción 2: REEMPLAZAR lugar del ticket actual
+    if (/^2\b/.test(t) || /^reemplazar\b/i.test(t) || /^cambiar\b/i.test(t)) {
+      if (conflictPlace) {
+        try {
+          const placeRes = await detectPlace(conflictPlace, { preferRoomsFirst: true });
+          if (placeRes?.found) {
+            setDraftField(s, 'lugar', placeRes.label);
+            s._lugarNotInCatalog = false;
+          } else {
+            setDraftField(s, 'lugar', conflictPlace);
+            s._lugarNotInCatalog = true;
+          }
+        } catch {
+          setDraftField(s, 'lugar', conflictPlace);
+          s._lugarNotInCatalog = true;
+        }
+      }
+      
+      s._conflictNewText = null;
+      s._conflictNewArea = null;
+      s._conflictNewPlace = null;
+      
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '✅ Lugar actualizado:\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Cancelar
+    if (/^cancelar?\b/i.test(t) || /^no\b/i.test(t)) {
+      s._conflictNewText = null;
+      s._conflictNewArea = null;
+      s._conflictNewPlace = null;
+      
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, '✅ Nuevo mensaje descartado. Continuamos con:\n\n' + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // No entendí
+    await replySafe(msg, 
+      '🤔 No entendí. Responde con:\n' +
+      '• *1* — Crear ticket nuevo\n' +
+      '• *2* — Reemplazar lugar\n' +
+      '• *cancelar* — Descartar nuevo mensaje'
+    );
+    return;
+  } else if (s.mode === 'followup_decision' && text) {
+    // ═══════════════════════════════════════════════════════════════
+    // Handler para decisión de followup con área diferente
+    // ═══════════════════════════════════════════════════════════════
+    const t = norm(text);
+    const candidate = s._candidateFollowup;
+    
+    if (!candidate) {
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    const areaNames = { it: 'IT', man: 'Mantenimiento', ama: 'HSKP', seg: 'Seguridad', rs: 'Room Service' };
+    
+    // Opción 1: agregar al ticket actual
+    if (/^(1|agregar|añadir|actual)\b/i.test(t)) {
+      const currentDesc = s.draft.descripcion || '';
+      const separator = currentDesc.endsWith('.') || currentDesc.endsWith('!') || currentDesc.endsWith('?') ? ' ' : '. ';
+      s.draft.descripcion = currentDesc + separator + 'También ' + candidate.detail;
+      
+      await refreshIncidentDescription(s, null, s.draft.descripcion);
+      s._candidateFollowup = null;
+      
+      let preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, `✅ Detalle agregado al ticket actual:\n\n` + preview);
+      setMode(s, 'confirm');
+      if (DEBUG) console.log('[FOLLOWUP] added to current ticket');
+      return;
+    }
+    
+    // Opción 2: crear ticket separado (guardar actual, crear nuevo)
+    if (/^(2|nuevo|separado)\b/i.test(t)) {
+      // Guardar ticket actual como pendiente
+      const currentTicket = { ...s.draft, _ticketNum: 1 };
+      
+      // Crear nuevo ticket con el followup
+      const newTicket = {
+        descripcion: candidate.detail,
+        descripcion_original: candidate.detail,
+        lugar: candidate.place || s.draft.lugar,
+        area_destino: candidate.area,
+        areas: [candidate.area],
+        _ticketNum: 2,
+      };
+      
+      // Inicializar array de múltiples tickets
+      s._multipleTickets = [currentTicket, newTicket];
+      s._candidateFollowup = null;
+      
+      let msg1 = `📝 *Ticket 1* (${areaNames[currentTicket.area_destino] || currentTicket.area_destino}):\n`;
+      msg1 += `   ${currentTicket.descripcion?.substring(0, 60)}...\n`;
+      msg1 += `   📍 ${currentTicket.lugar}\n\n`;
+      
+      let msg2 = `📝 *Ticket 2* (${areaNames[newTicket.area_destino] || newTicket.area_destino}):\n`;
+      msg2 += `   ${newTicket.descripcion?.substring(0, 60)}...\n`;
+      msg2 += `   📍 ${newTicket.lugar}\n\n`;
+      
+      await replySafe(msg,
+        '✅ *Se crearon 2 tickets:*\n\n' +
+        msg1 + msg2 +
+        '¿Qué deseas hacer?\n' +
+        '• *enviar* — Enviar ambos tickets\n' +
+        '• *editar 1* — Editar ticket 1\n' +
+        '• *editar 2* — Editar ticket 2\n' +
+        '• *cancelar* — Descartar ambos'
+      );
+      setMode(s, 'multiple_tickets');
+      if (DEBUG) console.log('[FOLLOWUP] created separate ticket');
+      return;
+    }
+    
+    // Opción 3: crear ambos tickets y enviar
+    if (/^(3|ambos|los\s*dos)\b/i.test(t)) {
+      // Similar a opción 2 pero envía directo
+      const currentTicket = { ...s.draft };
+      
+      // Enviar ticket actual
+      await finalizeAndDispatch({ client, msg, session: s, silent: true });
+      const folio1 = s.draft.folio;
+      
+      // Preparar y enviar segundo ticket
+      s.draft = {
+        descripcion: candidate.detail,
+        descripcion_original: candidate.detail,
+        lugar: candidate.place || currentTicket.lugar,
+        area_destino: candidate.area,
+        areas: [candidate.area],
+      };
+      
+      await refreshIncidentDescription(s, candidate.detail);
+      await finalizeAndDispatch({ client, msg, session: s, silent: true });
+      const folio2 = s.draft.folio;
+      
+      s._candidateFollowup = null;
+      
+      await replySafe(msg,
+        '✅ *2 tickets enviados:*\n\n' +
+        `1️⃣ *${folio1}* — ${areaNames[currentTicket.area_destino] || currentTicket.area_destino}\n` +
+        `2️⃣ *${folio2}* — ${areaNames[candidate.area] || candidate.area}`
+      );
+      
+      resetSession(chatId);
+      if (DEBUG) console.log('[FOLLOWUP] both tickets sent', { folio1, folio2 });
+      return;
+    }
+    
+    // Opción 4: cancelar
+    if (/^(4|cancelar|ignorar)\b/i.test(t)) {
+      s._candidateFollowup = null;
+      let preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, `👌 Ignorado. Tu ticket actual:\n\n` + preview);
+      setMode(s, 'confirm');
+      if (DEBUG) console.log('[FOLLOWUP] cancelled');
+      return;
+    }
+    
+    // No entendí
+    await replySafe(msg,
+      '🤔 No entendí. Responde:\n' +
+      '• *1* o *agregar* — Agregar al ticket actual\n' +
+      '• *2* o *nuevo* — Crear ticket separado\n' +
+      '• *3* o *ambos* — Crear y enviar ambos\n' +
+      '• *4* o *cancelar* — Ignorar'
+    );
+    return;
+    
+  } else if (s.mode === 'followup_place_decision' && text) {
+    // ═══════════════════════════════════════════════════════════════
+    // Handler para decisión de followup con lugar diferente
+    // ═══════════════════════════════════════════════════════════════
+    const t = norm(text);
+    const candidate = s._candidateFollowup;
+    
+    if (!candidate) {
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // Opción 1: actualizar lugar del ticket actual
+    if (/^(1|actualizar|cambiar)\b/i.test(t)) {
+      const oldLugar = s.draft.lugar;
+      setDraftField(s, 'lugar', candidate.place);
+      
+      // Agregar detalle
+      const currentDesc = s.draft.descripcion || '';
+      const separator = currentDesc.endsWith('.') || currentDesc.endsWith('!') || currentDesc.endsWith('?') ? ' ' : '. ';
+      s.draft.descripcion = currentDesc + separator + 'También ' + candidate.detail;
+      
+      await refreshIncidentDescription(s, null, s.draft.descripcion);
+      s._candidateFollowup = null;
+      
+      let preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, `✅ Lugar actualizado a *${candidate.place}*:\n\n` + preview);
+      setMode(s, 'confirm');
+      if (DEBUG) console.log('[FOLLOWUP-PLACE] updated place', { from: oldLugar, to: candidate.place });
+      return;
+    }
+    
+    // Opción 2: crear ticket separado
+    if (/^(2|nuevo|separado)\b/i.test(t)) {
+      const areaNames = { it: 'IT', man: 'Mantenimiento', ama: 'HSKP', seg: 'Seguridad', rs: 'Room Service' };
+      
+      const currentTicket = { ...s.draft, _ticketNum: 1 };
+      const newTicket = {
+        descripcion: candidate.detail,
+        descripcion_original: candidate.detail,
+        lugar: candidate.place,
+        area_destino: candidate.area,
+        areas: [candidate.area],
+        _ticketNum: 2,
+      };
+      
+      s._multipleTickets = [currentTicket, newTicket];
+      s._candidateFollowup = null;
+      
+      let msg1 = `📝 *Ticket 1:* ${currentTicket.lugar}\n`;
+      let msg2 = `📝 *Ticket 2:* ${newTicket.lugar}\n`;
+      
+      await replySafe(msg,
+        '✅ *Se crearon 2 tickets:*\n\n' +
+        msg1 + msg2 + '\n' +
+        '• *enviar* — Enviar ambos\n' +
+        '• *editar 1/2* — Editar\n' +
+        '• *cancelar* — Descartar'
+      );
+      setMode(s, 'multiple_tickets');
+      return;
+    }
+    
+    // Opción 3: cancelar
+    if (/^(3|cancelar|ignorar)\b/i.test(t)) {
+      s._candidateFollowup = null;
+      let preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, `👌 Ignorado. Tu ticket actual:\n\n` + preview);
+      setMode(s, 'confirm');
+      return;
+    }
+    
+    // No entendí
+    await replySafe(msg,
+      '🤔 No entendí. Responde:\n' +
+      '• *1* o *actualizar* — Cambiar lugar\n' +
+      '• *2* o *nuevo* — Crear ticket separado\n' +
+      '• *3* o *cancelar* — Ignorar'
+    );
+    return;
+    
   } else if (s.mode === 'multiple_tickets' && text) {
     // ✅ NUEVO: Manejo de tickets múltiples
     const t = norm(text);
@@ -3340,7 +4185,7 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
     // Opción: cancelar
     if (/^cancelar?\b/i.test(t) || isNo(text)) {
       s._multipleTickets = null;
-      resetSession(s.chatId);
+      resetSession(s);
       await replySafe(msg, '🗑️ Ambos tickets descartados.');
       return;
     }
@@ -3985,6 +4830,314 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
     }
     
     // ═══════════════════════════════════════════════════════════════
+    // VB-015 MEJORADO: DETAIL_FOLLOWUP - Análisis inteligente de seguimiento
+    // Maneja múltiples escenarios: mismo problema, otro problema, cambio lugar, etc.
+    // ═══════════════════════════════════════════════════════════════
+    if (msgType === 'detail_followup') {
+      // Extraer el detalle (quitar "también", "además", etc.)
+      const detail = rawUser
+        .replace(/^(tambi[eé]n|adem[aá]s|y\s+tambi[eé]n|aparte|y\s+aparte|otro\s+detalle|tambi[eé]n\s+hay|ah,?\s*(y\s+)?tambi[eé]n|otra\s+cosa|y\s+otra\s+cosa)\s*/i, '')
+        .trim();
+      
+      if (detail.length < 5) {
+        await replySafe(msg, '¿Qué más quieres agregar al ticket?');
+        return;
+      }
+      
+      // ═══════════════════════════════════════════════════════════════
+      // ANÁLISIS DEL MENSAJE DE SEGUIMIENTO
+      // ═══════════════════════════════════════════════════════════════
+      
+      // 1. Detectar si tiene lugar
+      const followupPlace = findStrongPlaceSignals(detail);
+      let hasNewPlace = false;
+      let newPlaceLabel = null;
+      
+      if (followupPlace) {
+        try {
+          const placeResult = await detectPlace(detail, { preferRoomsFirst: true });
+          if (placeResult?.found) {
+            newPlaceLabel = placeResult.label;
+            // Verificar si es diferente al actual
+            const currentLugar = norm(s.draft.lugar || '');
+            const newLugar = norm(newPlaceLabel);
+            hasNewPlace = currentLugar !== newLugar && !newLugar.includes(currentLugar) && !currentLugar.includes(newLugar);
+          }
+        } catch {}
+      }
+      
+      // 2. Detectar área del detalle
+      let detailArea = null;
+      let areaIsDifferent = false;
+      try {
+        const areaResult = await detectArea(detail);
+        if (areaResult?.area) {
+          detailArea = areaResult.area;
+          areaIsDifferent = detailArea !== s.draft.area_destino;
+        }
+      } catch {}
+      
+      // 3. Detectar si trae área explícita ("para IT", "es de mantenimiento")
+      const explicitAreaMatch = detail.match(/\b(para|es\s+de|va\s+a|manda\s+a)\s+(it|mantenimiento|hskp|seguridad|room\s*service)\b/i);
+      let hasExplicitArea = false;
+      if (explicitAreaMatch) {
+        hasExplicitArea = true;
+        const areaText = explicitAreaMatch[2].toLowerCase();
+        const areaMap = { 'it': 'it', 'mantenimiento': 'man', 'hskp': 'ama', 'seguridad': 'seg', 'room service': 'rs', 'roomservice': 'rs' };
+        if (areaMap[areaText]) {
+          detailArea = areaMap[areaText];
+          areaIsDifferent = detailArea !== s.draft.area_destino;
+        }
+      }
+      
+      // 4. Detectar si es un problema diferente (no contexto del mismo)
+      const currentProblemType = detectProblemType(s.draft.descripcion || '');
+      const newProblemType = detectProblemType(detail);
+      const isDifferentProblem = currentProblemType && newProblemType && currentProblemType !== newProblemType;
+      
+      if (DEBUG) {
+        console.log('[CONFIRM] followup analysis', {
+          detail: detail.substring(0, 50),
+          hasNewPlace,
+          newPlaceLabel,
+          detailArea,
+          currentArea: s.draft.area_destino,
+          areaIsDifferent,
+          hasExplicitArea,
+          isDifferentProblem,
+          currentProblemType,
+          newProblemType
+        });
+      }
+      
+      // ═══════════════════════════════════════════════════════════════
+      // ESCENARIO 1: Solo detalle, misma área → Agregar como detalle
+      // ═══════════════════════════════════════════════════════════════
+      if (!hasNewPlace && !areaIsDifferent && !hasExplicitArea && !isDifferentProblem) {
+        // Agregar a la descripción
+        const currentDesc = s.draft.descripcion || '';
+        const separator = currentDesc.endsWith('.') || currentDesc.endsWith('!') || currentDesc.endsWith('?') ? ' ' : '. ';
+        s.draft.descripcion = currentDesc + separator + 'También ' + detail;
+        
+        if (!Array.isArray(s.draft._details)) s.draft._details = [];
+        s.draft._details.push(detail);
+        
+        await refreshIncidentDescription(s, null, s.draft.descripcion);
+        
+        let preview = formatPreviewMessage(s.draft);
+        if (s._lugarNotInCatalog && s.draft.lugar) {
+          preview = `⚠️ *${s.draft.lugar}* no está en el catálogo.\n\n` + preview;
+        }
+        
+        await replySafe(msg, `✅ Detalle agregado:\n\n` + preview);
+        if (DEBUG) console.log('[CONFIRM] VB-015: detail added (same context)', { detail });
+        return;
+      }
+      
+      // ═══════════════════════════════════════════════════════════════
+      // ESCENARIO 2: Solo lugar diferente → Actualizar lugar
+      // ═══════════════════════════════════════════════════════════════
+      if (hasNewPlace && !areaIsDifferent && !hasExplicitArea && !isDifferentProblem) {
+        const oldLugar = s.draft.lugar;
+        setDraftField(s, 'lugar', newPlaceLabel);
+        
+        // Actualizar referencias en descripción
+        if (oldLugar && s.draft.descripcion) {
+          const oldRoomMatch = oldLugar.match(/\d{4}/);
+          const newRoomMatch = newPlaceLabel.match(/\d{4}/);
+          if (oldRoomMatch && newRoomMatch && oldRoomMatch[0] !== newRoomMatch[0]) {
+            s.draft.descripcion = s.draft.descripcion.replace(new RegExp(oldRoomMatch[0], 'g'), newRoomMatch[0]);
+          }
+        }
+        
+        // Agregar el detalle también
+        const currentDesc = s.draft.descripcion || '';
+        const separator = currentDesc.endsWith('.') || currentDesc.endsWith('!') || currentDesc.endsWith('?') ? ' ' : '. ';
+        s.draft.descripcion = currentDesc + separator + 'También ' + detail;
+        
+        await refreshIncidentDescription(s, null, s.draft.descripcion);
+        
+        let preview = formatPreviewMessage(s.draft);
+        await replySafe(msg, `✅ Lugar actualizado a *${newPlaceLabel}* y detalle agregado:\n\n` + preview);
+        if (DEBUG) console.log('[CONFIRM] VB-015: place updated + detail', { from: oldLugar, to: newPlaceLabel });
+        return;
+      }
+      
+      // ═══════════════════════════════════════════════════════════════
+      // ESCENARIO 3: Solo área explícita → Cambiar área
+      // ═══════════════════════════════════════════════════════════════
+      if (hasExplicitArea && !hasNewPlace && !isDifferentProblem) {
+        const oldArea = s.draft.area_destino;
+        setDraftField(s, 'area_destino', detailArea);
+        
+        let preview = formatPreviewMessage(s.draft);
+        const areaNames = { it: 'IT', man: 'Mantenimiento', ama: 'HSKP', seg: 'Seguridad', rs: 'Room Service' };
+        await replySafe(msg, `✅ Área cambiada a *${areaNames[detailArea] || detailArea}*:\n\n` + preview);
+        if (DEBUG) console.log('[CONFIRM] VB-015: area changed', { from: oldArea, to: detailArea });
+        return;
+      }
+      
+      // ═══════════════════════════════════════════════════════════════
+      // ESCENARIO 4: Problema diferente y/o área diferente → Menú de decisión
+      // ═══════════════════════════════════════════════════════════════
+      if (areaIsDifferent || isDifferentProblem) {
+        const areaNames = { it: 'IT', man: 'Mantenimiento', ama: 'HSKP', seg: 'Seguridad', rs: 'Room Service' };
+        
+        // Guardar el nuevo problema como candidato
+        s._candidateFollowup = {
+          detail,
+          area: detailArea,
+          place: hasNewPlace ? newPlaceLabel : s.draft.lugar,
+          problemType: newProblemType,
+        };
+        
+        let menuMsg = '🔀 *Detecté un problema para otra área*\n\n';
+        menuMsg += `📌 *Ticket actual:* ${s.draft.descripcion?.substring(0, 50)}...\n`;
+        menuMsg += `   📍 ${s.draft.lugar} | 🏷️ ${areaNames[s.draft.area_destino] || s.draft.area_destino}\n\n`;
+        menuMsg += `📌 *Nuevo problema:* ${detail.substring(0, 50)}${detail.length > 50 ? '...' : ''}\n`;
+        menuMsg += `   🏷️ ${areaNames[detailArea] || detailArea || 'Sin área'}\n\n`;
+        menuMsg += '¿Qué deseas hacer?\n\n';
+        menuMsg += '1️⃣ *agregar* — Agregar al ticket actual\n';
+        menuMsg += '2️⃣ *nuevo* — Crear ticket separado\n';
+        menuMsg += '3️⃣ *ambos* — Crear 2 tickets (uno por área)\n';
+        menuMsg += '4️⃣ *cancelar* — Ignorar el nuevo problema';
+        
+        await replySafe(msg, menuMsg);
+        setMode(s, 'followup_decision');
+        if (DEBUG) console.log('[CONFIRM] VB-015: different area/problem, showing menu');
+        return;
+      }
+      
+      // ═══════════════════════════════════════════════════════════════
+      // ESCENARIO 5: Problema + lugar diferente → Menú de decisión
+      // ═══════════════════════════════════════════════════════════════
+      if (hasNewPlace) {
+        s._candidateFollowup = {
+          detail,
+          area: detailArea || s.draft.area_destino,
+          place: newPlaceLabel,
+          problemType: newProblemType,
+        };
+        
+        let menuMsg = '🔀 *Detecté un problema en otro lugar*\n\n';
+        menuMsg += `📌 *Ticket actual:* ${s.draft.lugar}\n`;
+        menuMsg += `📌 *Nuevo lugar:* ${newPlaceLabel}\n\n`;
+        menuMsg += '¿Qué deseas hacer?\n\n';
+        menuMsg += '1️⃣ *actualizar* — Cambiar lugar del ticket actual\n';
+        menuMsg += '2️⃣ *nuevo* — Crear ticket separado\n';
+        menuMsg += '3️⃣ *cancelar* — Ignorar';
+        
+        await replySafe(msg, menuMsg);
+        setMode(s, 'followup_place_decision');
+        if (DEBUG) console.log('[CONFIRM] VB-015: different place, showing menu');
+        return;
+      }
+      
+      // Fallback: agregar como detalle
+      const currentDesc = s.draft.descripcion || '';
+      const separator = currentDesc.endsWith('.') || currentDesc.endsWith('!') || currentDesc.endsWith('?') ? ' ' : '. ';
+      s.draft.descripcion = currentDesc + separator + 'También ' + detail;
+      
+      await refreshIncidentDescription(s, null, s.draft.descripcion);
+      let preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, `✅ Detalle agregado:\n\n` + preview);
+      if (DEBUG) console.log('[CONFIRM] VB-015: fallback detail added', { detail });
+      return;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ NUEVO: CANDIDATO A NUEVO INCIDENTE (problema + lugar diferente)
+    // Según reglas: si trae problema + lugar diferente → menú de edición
+    // ═══════════════════════════════════════════════════════════════
+    if (msgType === 'new_incident_candidate') {
+      // Detectar si el lugar es diferente al actual
+      const differentPlace = isDifferentStrongPlace(rawUser, s.draft);
+      
+      // Detectar área del nuevo mensaje
+      let newMessageArea = null;
+      try {
+        const areaResult = await detectArea(rawUser);
+        if (areaResult?.area) {
+          newMessageArea = areaResult.area;
+        }
+      } catch (e) {
+        if (DEBUG) console.warn('[CONFIRM] detectArea error:', e?.message);
+      }
+      
+      const currentArea = s.draft.area_destino || null;
+      
+      if (DEBUG) console.log('[CONFIRM] new_incident_candidate analysis', {
+        differentPlace,
+        currentArea,
+        newMessageArea,
+        currentLugar: s.draft.lugar,
+        newText: rawUser.substring(0, 40)
+      });
+      
+      // Si las áreas son diferentes, mostrar menú de área diferente
+      if (newMessageArea && currentArea && newMessageArea !== currentArea && differentPlace) {
+        if (DEBUG) console.log('[CONFIRM] AREA CONFLICT - showing menu');
+        
+        s._conflictNewText = rawUser;
+        s._conflictNewArea = newMessageArea;
+        s._conflictNewPlace = findStrongPlaceSignals(rawUser)?.value || null;
+        
+        await replySafe(msg,
+          '⚠️ *Detecté un problema para otra área.*\n\n' +
+          `📋 *Ticket actual:* ${areaLabel(currentArea)}\n` +
+          `   _"${(s.draft.descripcion || '').substring(0, 50)}${(s.draft.descripcion || '').length > 50 ? '...' : ''}"_` +
+          (s.draft.lugar ? `\n   📍 ${s.draft.lugar}` : '') + '\n\n' +
+          `🆕 *Nuevo problema:* ${areaLabel(newMessageArea)}\n` +
+          `   _"${rawUser.substring(0, 50)}${rawUser.length > 50 ? '...' : ''}"_\n\n` +
+          '¿Qué quieres hacer?\n' +
+          '• *1* — Enviar *ambos* tickets (actual + nuevo)\n' +
+          '• *2* — Editar ticket *actual* (descartar nuevo)\n' +
+          '• *3* — Crear ticket *nuevo* (descartar actual)\n' +
+          '• *cancelar* — Descartar todo'
+        );
+        
+        setMode(s, 'edit_menu');
+        return;
+      }
+      
+      // Si el lugar es diferente (misma área o sin área), mostrar menú de lugar
+      if (differentPlace) {
+        if (DEBUG) console.log('[CONFIRM] PLACE CONFLICT - showing menu');
+        
+        s._conflictNewText = rawUser;
+        s._conflictNewArea = newMessageArea || currentArea;
+        s._conflictNewPlace = findStrongPlaceSignals(rawUser)?.value || null;
+        
+        await replySafe(msg,
+          '🤔 *Detecté un problema en otro lugar.*\n\n' +
+          `📋 *Ticket actual:*\n` +
+          `   _"${(s.draft.descripcion || '').substring(0, 50)}${(s.draft.descripcion || '').length > 50 ? '...' : ''}"_` +
+          (s.draft.lugar ? `\n   📍 ${s.draft.lugar}` : '') + '\n\n' +
+          `🆕 *Nuevo problema:*\n` +
+          `   _"${rawUser.substring(0, 50)}${rawUser.length > 50 ? '...' : ''}"_\n\n` +
+          '¿Qué quieres hacer?\n' +
+          '• *1* — Crear ticket *nuevo* (además del actual)\n' +
+          '• *2* — *Reemplazar* lugar del ticket actual\n' +
+          '• *cancelar* — Descartar el nuevo mensaje'
+        );
+        
+        setMode(s, 'edit_menu_place');
+        return;
+      }
+      
+      // Si no hay lugar diferente, tratar como detalle adicional
+      if (DEBUG) console.log('[CONFIRM] new_incident_candidate but same place - treating as detail');
+      const added = addDetail(s, rawUser);
+      if (added) {
+        await refreshIncidentDescription(s, rawUser);
+      }
+      
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, `✅ Detalle agregado:\n\n` + preview);
+      return;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
     // CAMBIO EXPRESS DE LUGAR
     // ═══════════════════════════════════════════════════════════════
     if (msgType === 'place_change') {
@@ -4495,11 +5648,139 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
     differentPlace: isDifferentStrongPlace(text, s.draft)
   });
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ✅ REGLA CRÍTICA: Detectar problema para LUGAR/ÁREA DIFERENTE
+  // Si ya hay un draft con lugar/descripción y el nuevo mensaje tiene lugar diferente,
+  // DEBE abrir el menú de edición para decidir qué hacer.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const hasDraftWithContent = !isSessionBareForNI(s) && (s.draft.lugar || s.draft.descripcion);
+  const notInEditMode = s.mode !== 'context_switch' && s.mode !== 'edit_menu' && s.mode !== 'edit_menu_place';
+  
+  if (DEBUG) console.log('[NI] CONFLICT CHECK', {
+    hasDraftWithContent,
+    notInEditMode,
+    draftLugar: s.draft.lugar,
+    draftDesc: (s.draft.descripcion || '').substring(0, 30),
+    mode: s.mode
+  });
+  
+  if (hasDraftWithContent && notInEditMode) {
+    const differentPlace = isDifferentStrongPlace(text, s.draft);
+    const isNewCandidate = ai.meta?.is_new_incident_candidate === true;
+    const isPlaceCorrection = ai.meta?.is_place_correction_only === true;
+    
+    if (DEBUG) console.log('[NI] CONFLICT FLAGS', {
+      differentPlace,
+      isNewCandidate,
+      isPlaceCorrection,
+      hasPlaceConflict: differentPlace && (isNewCandidate || isPlaceCorrection)
+    });
+    
+    // Detectar si hay conflicto de lugar
+    const hasPlaceConflict = differentPlace && (isNewCandidate || isPlaceCorrection);
+    
+    if (hasPlaceConflict) {
+      // Detectar área del nuevo mensaje para comparar
+      let newMessageArea = null;
+      try {
+        const areaResult = await detectArea(text);
+        if (areaResult?.area) {
+          newMessageArea = areaResult.area;
+        }
+      } catch (e) {
+        if (DEBUG) console.warn('[NI] detectArea for conflict check error:', e?.message);
+      }
+      
+      const currentArea = s.draft.area_destino || null;
+      
+      // Si las áreas son diferentes, mostrar menú de área diferente
+      if (newMessageArea && currentArea && newMessageArea !== currentArea) {
+        if (DEBUG) console.log('[NI] AREA CONFLICT detected', {
+          currentArea,
+          newMessageArea,
+          differentPlace,
+          isNewCandidate,
+          currentDesc: (s.draft.descripcion || '').substring(0, 30),
+          newText: text.substring(0, 30)
+        });
+        
+        // Guardar datos del nuevo problema
+        s._conflictNewText = text;
+        s._conflictNewArea = newMessageArea;
+        s._conflictNewPlace = ai.hints?.placeText || null;
+        
+        // Mostrar menú de edición para áreas diferentes
+        await replySafe(msg,
+          '⚠️ *Detecté un problema para otra área.*\n\n' +
+          `📋 *Ticket actual:* ${areaLabel(currentArea)}\n` +
+          `   _"${(s.draft.descripcion || '').substring(0, 50)}${(s.draft.descripcion || '').length > 50 ? '...' : ''}"_` +
+          (s.draft.lugar ? `\n   📍 ${s.draft.lugar}` : '') + '\n\n' +
+          `🆕 *Nuevo problema:* ${areaLabel(newMessageArea)}\n` +
+          `   _"${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"_\n\n` +
+          '¿Qué quieres hacer?\n' +
+          '• *1* — Enviar *ambos* tickets (actual + nuevo)\n' +
+          '• *2* — Editar ticket *actual* (descartar nuevo)\n' +
+          '• *3* — Crear ticket *nuevo* (descartar actual)\n' +
+          '• *cancelar* — Descartar todo'
+        );
+        
+        setMode(s, 'edit_menu');
+        return;
+      }
+      
+      // Si las áreas son iguales (o no hay área aún), mostrar menú de lugar diferente
+      if (DEBUG) console.log('[NI] PLACE CONFLICT detected', {
+        currentPlace: s.draft.lugar,
+        newText: text.substring(0, 30),
+        isNewCandidate,
+        isPlaceCorrection,
+        currentArea,
+        newMessageArea
+      });
+      
+      // Guardar datos del nuevo problema
+      s._conflictNewText = text;
+      s._conflictNewArea = newMessageArea || currentArea;
+      s._conflictNewPlace = ai.hints?.placeText || null;
+      
+      await replySafe(msg,
+        '🤔 *Detecté un problema en otro lugar.*\n\n' +
+        `📋 *Ticket actual:*\n` +
+        `   _"${(s.draft.descripcion || '').substring(0, 50)}${(s.draft.descripcion || '').length > 50 ? '...' : ''}"_` +
+        (s.draft.lugar ? `\n   📍 ${s.draft.lugar}` : '') + '\n\n' +
+        `🆕 *Nuevo problema:*\n` +
+        `   _"${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"_\n\n` +
+        '¿Qué quieres hacer?\n' +
+        '• *1* — Crear ticket *nuevo* (además del actual)\n' +
+        '• *2* — *Reemplazar* lugar del ticket actual\n' +
+        '• *cancelar* — Descartar el nuevo mensaje'
+      );
+      
+      setMode(s, 'edit_menu_place');
+      return;
+    }
+  }
+
   // ✅ MEJORADO: Detectar cambio drástico de contexto (nueva incidencia vs draft existente)
   // Aplica si hay un draft con descripción, en cualquier modo excepto context_switch
   if (!isSessionBareForNI(s) && s.draft.descripcion && s.mode !== 'context_switch') {
     const currentDesc = norm(s.draft.descripcion || '');
     const newText = norm(text);
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VB-013 FIX: Considerar edad del draft
+    // Si draft < 2 min = preguntar qué hacer
+    // Si draft > 2 min y usuario está respondiendo = probablemente continuación
+    // ═══════════════════════════════════════════════════════════════════════════
+    const DRAFT_FRESH_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutos
+    const draftAge = Date.now() - (s.updatedAt || s.createdAt || Date.now());
+    const isDraftFresh = draftAge < DRAFT_FRESH_THRESHOLD_MS;
+    
+    // ✅ VB-013: Detectar si es un reporte completo nuevo (problema + lugar)
+    const hasNewProblem = /\b(no\s+funciona|no\s+sirve|no\s+enciende|no\s+prende|roto|dañado|falla|fuga|gotea|problema|necesito|traigan|traer)\b/i.test(text);
+    const hasNewPlace = findStrongPlaceSignals(text) !== null || 
+                        /\b(hab(itacion|itación)?|villa|front|lobby|spa|gym|playa|nido|recepcion|recepción)\s*\d*/i.test(text);
+    const isNewReportFull = hasNewProblem && hasNewPlace && text.length > 20;
     
     // ✅ NUEVO: Si estamos esperando lugar pero el mensaje parece un reporte completo nuevo
     if (s.mode === 'ask_place' || s.mode === 'confirm' || s.mode === 'preview') {
@@ -4523,38 +5804,44 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
         
         // Si son problemas diferentes O lugares diferentes, es cambio de contexto
         if ((currentProblemType !== newProblemType) || mentionsDifferentPlace) {
-          if (DEBUG) console.log('[NI] context switch detected in ask_place/confirm', { 
+          if (DEBUG) console.log('[NI] VB-013: context switch detected', { 
             mode: s.mode,
             currentProblem: currentProblemType,
             newProblem: newProblemType,
-            mentionsDifferentPlace
+            mentionsDifferentPlace,
+            draftAge: Math.round(draftAge / 1000) + 's',
+            isDraftFresh
           });
           
-          await replySafe(msg,
-            '🤔 Parece que me estás reportando algo diferente.\n\n' +
-            `Tu reporte anterior: _"${s.draft.descripcion.substring(0, 50)}${s.draft.descripcion.length > 50 ? '...' : ''}"_` +
-            (s.draft.lugar ? ` en *${s.draft.lugar}*` : '') + '\n\n' +
-            '¿Qué prefieres?\n' +
-            '• *nuevo* — iniciar un ticket nuevo con esto\n' +
-            '• *anterior* — continuar con el ticket anterior\n' +
-            '• *cancelar* — descartar todo'
-          );
-          
-          s._candidateIncidentText = text;
-          s._contextSwitchPending = true;
-          setMode(s, 'context_switch');
-          return;
+          // VB-013: Si el draft es muy nuevo (< 2 min), preguntar
+          // Si es viejo, podría ser que el usuario simplemente tardó en responder
+          if (isDraftFresh || isNewReportFull) {
+            await replySafe(msg,
+              '🤔 Parece que me estás reportando algo diferente.\n\n' +
+              `Tu reporte anterior: _"${s.draft.descripcion.substring(0, 50)}${s.draft.descripcion.length > 50 ? '...' : ''}"_` +
+              (s.draft.lugar ? ` en *${s.draft.lugar}*` : '') + '\n\n' +
+              '¿Qué prefieres?\n' +
+              '• *nuevo* — iniciar un ticket nuevo con esto\n' +
+              '• *anterior* — continuar con el ticket anterior\n' +
+              '• *cancelar* — descartar todo'
+            );
+            
+            s._candidateIncidentText = text;
+            s._contextSwitchPending = true;
+            setMode(s, 'context_switch');
+            return;
+          }
         }
       }
     }
     
     // Detectar si el nuevo mensaje parece un problema diferente (flujo original)
     const hasPlaceChange = isDifferentStrongPlace(text, s.draft);
-    const hasNewProblem = /\b(no\s+funciona|no\s+sirve|no\s+enciende|roto|dañado|falla|fuga|gotea|problema)\b/i.test(text);
+    const hasNewProblemOriginal = /\b(no\s+funciona|no\s+sirve|no\s+enciende|roto|dañado|falla|fuga|gotea|problema)\b/i.test(text);
     const currentIsRequest = /\b(traer|comida|hambre|quiero|necesito)\b/i.test(currentDesc);
     
     // Si el draft actual era una solicitud y el nuevo es un problema técnico
-    if (currentIsRequest && hasNewProblem && s.mode !== 'ask_place' && s.mode !== 'confirm') {
+    if (currentIsRequest && hasNewProblemOriginal && s.mode !== 'ask_place' && s.mode !== 'confirm') {
       if (DEBUG) console.log('[NI] context switch: request → incident', { 
         currentDesc: currentDesc.substring(0, 30),
         newText: newText.substring(0, 30)
@@ -4578,7 +5865,7 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
     }
     
     // Si hay cambio de lugar + parece problema nuevo diferente
-    if (hasPlaceChange && hasNewProblem && s.mode !== 'ask_place' && s.mode !== 'confirm') {
+    if (hasPlaceChange && hasNewProblemOriginal && s.mode !== 'ask_place' && s.mode !== 'confirm') {
       const currentProblemType = detectProblemType(currentDesc);
       const newProblemType = detectProblemType(newText);
       
@@ -5000,7 +6287,7 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
     }
   }
 
-  /* 6) Siguiente paso - SIMPLIFICADO: Siempre mostrar preview */
+  /* 6) Siguiente paso - Validar antes de preview */
   if (DEBUG) {
     console.log('[NI] draft.before_preview', {
       descripcion: s.draft.descripcion,
@@ -5010,8 +6297,67 @@ async function handleTurn(client, msg, { catalogPath } = {}) {
     });
   }
   
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VB-007/009 FIX: No mostrar preview si el texto es muy vago
+  // ═══════════════════════════════════════════════════════════════════════════
+  const descForCheck = s.draft.descripcion || s.draft.descripcion_original || '';
+  const isDescVague = isVagueText(descForCheck);
+  const hasLocation = !!(s.draft.lugar);
+  
+  if (isDescVague && !hasLocation) {
+    // Texto vago sin lugar = pedir más info
+    if (DEBUG) console.log('[NI] VB-007/009: vague text without location, asking for details', { desc: descForCheck });
+    
+    await replySafe(msg,
+      '🤔 Necesito un poco más de información.\n\n' +
+      '¿Qué problema hay exactamente y dónde está?\n\n' +
+      '_Ejemplo: "No funciona el aire en hab 1205"_\n' +
+      '_Ejemplo: "Fuga de agua en baño de Villa 3"_'
+    );
+    setMode(s, 'neutral');
+    return;
+  }
+  
+  if (isDescVague && hasLocation) {
+    // Tiene lugar pero descripción vaga = pedir qué problema
+    if (DEBUG) console.log('[NI] VB-007/009: vague text with location, asking for problem', { desc: descForCheck, lugar: s.draft.lugar });
+    
+    await replySafe(msg,
+      `📍 Entendido, *${s.draft.lugar}*.\n\n` +
+      `¿Qué problema hay ahí?\n\n` +
+      `_Ejemplo: "el aire no enfría"_\n` +
+      `_Ejemplo: "hay una fuga de agua"_`
+    );
+    setMode(s, 'ask_place'); // Reusar este modo para esperar más info
+    return;
+  }
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VB-008 FIX: Solo ubicación sin problema = pedir problema
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (hasLocation && !hasMinimumIncidentInfo(s.draft)) {
+    if (DEBUG) console.log('[NI] VB-008: location only, asking for problem', { lugar: s.draft.lugar });
+    
+    await replySafe(msg,
+      `📍 *${s.draft.lugar}* — entendido.\n\n` +
+      `¿Cuál es el problema?\n\n` +
+      `_Ejemplo: "el aire no enfría"_`
+    );
+    setMode(s, 'ask_place');
+    return;
+  }
+  
   // Mostrar preview (indicando qué falta si aplica)
   let preview = formatPreviewMessage(s.draft);
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // VB-006 FIX: Mostrar advertencia si el lugar fue corregido automáticamente
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (s._lugarCorrectedFrom && s.draft.lugar) {
+    preview = `ℹ️ Corregí *"${s._lugarCorrectedFrom}"* → *${s.draft.lugar}*\n\n` + preview;
+    // Limpiar para no mostrar de nuevo si refrescan preview
+    s._lugarCorrectedFrom = null;
+  }
   
   // ✅ Agregar advertencia si la habitación no está en catálogo
   if (s._lugarNotInCatalog && s.draft.lugar) {

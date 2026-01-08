@@ -1,17 +1,10 @@
 {
-  "5217751801318@c.us": {
+    "5217751801318@c.us": {
     "nombre": "Gustavo Peralta",
-    "cargo": "IT Aux",
+    "cargo": "IT Auxiliar",
     "rol": "admin",
     "team": "it",
     "titulo": "Sr."
-  },
-  "5216241763977@c.us": {
-    "nombre": "Tania Jiménez",
-    "cargo": "IT Practicante",
-    "rol": "admin",
-    "team": "it",
-    "titulo": "Srta."
   },
   "5216242201467@c.us": {
     "nombre": "Omaly Martell",
@@ -205,14 +198,14 @@
   "5216241192474@c.us": {
     "nombre": "Maribel Ramirez",
     "cargo": "Guest Experience Manager",
-    "rol": "admin",
+    "rol": "user",
     "team": "exp",
     "titulo": "Srta."
   },
   "5216242672198@c.us": {
     "nombre": "Viceroy Connect",
     "cargo": "Connect",
-    "rol": "admin",
+    "rol": "user",
     "team": "exp",
     "titulo": "Srtas."
   }

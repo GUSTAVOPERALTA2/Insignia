@@ -118,18 +118,15 @@ function stepIncidentStatus({
 
     // Solicitante feliz con done_claim
     else if (intent === 'done_claim' && reqSide === 'happy') {
-      if (isAwaiting(cur)) {
-        // Regla según tests: NO autocerrar; se mantiene en awaiting_confirmation
-        next = cur;
-        reason = 'requester_happy_keeps_awaiting_confirmation';
-      } else if (isTerminal(cur)) {
+      if (isTerminal(cur)) {
         // Ya está en done/resolved/closed → se queda igual
         next = cur;
         reason = 'requester_happy_on_terminal_no_change';
       } else {
-        // Conservador: no cambiamos automáticamente
-        next = cur;
-        reason = 'requester_happy_no_autoclose';
+        // ✅ CAMBIO: Si el solicitante confirma que quedó resuelto, cerrar el ticket
+        // Esto aplica tanto si estaba en awaiting_confirmation como en open/in_progress
+        next = 'done';
+        reason = 'requester_confirmed_done';
       }
     }
 

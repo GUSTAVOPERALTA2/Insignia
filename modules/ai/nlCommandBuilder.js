@@ -1,189 +1,148 @@
 // modules/ai/nlCommandBuilder.js
-// ✅ VERSIÓN CORREGIDA: NO convierte reportes en comandos de búsqueda
+// ═══════════════════════════════════════════════════════════════════════════
+// Convierte lenguaje natural a comandos de tickets
+// VERSIÓN MEJORADA: Usa ticketQueryNL para detección robusta
+// ═══════════════════════════════════════════════════════════════════════════
 
 const DEBUG = (process.env.VICEBOT_DEBUG || '1') === '1';
-const MIN_TICKETS_AI_CONF = Number(process.env.VICEBOT_MIN_TICKETS_AI_CONF || '0.75'); // ← Aumentado
 
-let _ticketsAI = null;
-function getTicketsAI() {
-  if (_ticketsAI !== null) return _ticketsAI;
-  try {
-    _ticketsAI = require('./ticketsQueryInterpreter');
-  } catch (e) {
-    _ticketsAI = null;
-    if (DEBUG) console.warn('[NL-CMD] ticketsQueryInterpreter missing:', e?.message || e);
-  }
-  return _ticketsAI;
+// Importar parser de consultas
+let ticketQueryNL = null;
+try {
+  ticketQueryNL = require('./ticketQueryNL');
+} catch (e) {
+  if (DEBUG) console.warn('[NL-CMD] ticketQueryNL missing:', e?.message);
 }
 
-function normalizeText(s = '') {
-  return String(s || '')
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim();
-}
+// ──────────────────────────────────────────────────────────────
+// Mapeo de status a argumentos del comando
+// ──────────────────────────────────────────────────────────────
 
-// ✅ NUEVO: Detecta si es un REPORTE (no una consulta)
-function looksLikeReport(text = '') {
-  const t = normalizeText(text);
+function mapStatusToArg(statusArray) {
+  if (!statusArray || statusArray.length === 0) return null;
   
-  // Patrones de REPORTE (problema actual)
-  const reportPatterns = [
-    /\bno\s+(hay|funciona|sirve|prende|enciende|jala)\b/,
-    /\b(fuga|gotea|tirando agua|se rompi[oó]|descompuesto)\b/,
-    /\b(necesito|urge|urgente|ayuda)\s+(con|en|mantenimiento|limpieza|sistemas)\b/,
-    /\b(está|esta)\s+(sucio|roto|fallando|malo)\b/,
-  ];
-
-  if (reportPatterns.some(p => p.test(t))) {
-    return true;
-  }
-
-  // ✅ Si menciona "el/la/los/las" + problema → es reporte
-  if (/\b(el|la|los|las)\s+\w+\s+(no|está|esta)\b/.test(t)) {
-    return true;
-  }
-
-  return false;
-}
-
-// ✅ NUEVO: Detecta si es una CONSULTA (buscar tickets existentes)
-function looksLikeQuery(text = '') {
-  const t = normalizeText(text);
-  
-  // Patrones de CONSULTA (buscar info de tickets)
-  const queryPatterns = [
-    /\b(como\s+va|como\s+vamos|que\s+paso\s+con|estatus|status)\b/,
-    /\b(mis\s+tickets|mis\s+reportes|mis\s+incidencias)\b/,
-    /\b(buscar?|encuentra|dame|muestra|ver)\s+(tickets?|reportes?)\b/,
-    /\b(cuantos|cuales)\s+(tickets?|reportes?)\b/,
-    /\b(tickets?\s+(abiertos?|cerrados?|pendientes?|cancelados?))\b/,
-  ];
-
-  return queryPatterns.some(p => p.test(t));
-}
-
-function mapStatusToArg(status) {
-  const s = String(status || '').toLowerCase().trim();
-  if (!s) return null;
-
-  if (['open', 'opened', 'abierto', 'abiertos', 'abierta', 'abiertas', 'pendiente', 'pendientes', 'in_progress', 'progreso', 'en_curso'].includes(s)) {
+  // Si tiene open + in_progress → "abiertos" (pendientes)
+  if (statusArray.includes('open') && statusArray.includes('in_progress')) {
     return 'abiertos';
   }
-  if (['closed', 'cerrado', 'cerrados', 'completado', 'completados', 'done', 'resolved', 'resuelto', 'resueltos', 'finalizado', 'finalizados'].includes(s)) {
+  
+  // Si solo tiene done → "cerrados"
+  if (statusArray.includes('done') && statusArray.length === 1) {
     return 'cerrados';
   }
-  if (['canceled', 'cancelled', 'cancelado', 'cancelados', 'cancelada', 'canceladas'].includes(s)) {
+  
+  // Si solo tiene canceled → "cancelados"
+  if (statusArray.includes('canceled') && statusArray.length === 1) {
     return 'cancelados';
   }
-
-  return null;
-}
-
-function isExplicitGlobal(textNorm) {
-  return /\b(todos|todas|global|general|de todas las areas|todas las areas|toda la operacion)\b/i.test(textNorm);
-}
-
-function buildTicketsCommandFromAI(ai, originalText = '') {
-  if (!ai || ai.is_tickets_query !== true) return null;
-
-  const conf = Number(ai.confidence || 0);
-  if (conf < MIN_TICKETS_AI_CONF) return null;
-
-  const tNorm = normalizeText(originalText);
-  const area = ai.area ? String(ai.area).toLowerCase().trim() : null;
-  const mine = ai.mine !== false;
-
-  const parts = [];
-
-  if (!mine) {
-    if (area) {
-      parts.push(area);
-    } else if (!isExplicitGlobal(tNorm)) {
-      // No permitimos global implícito
-    }
+  
+  // Si tiene in_progress → "en_progreso"
+  if (statusArray.includes('in_progress') && statusArray.length === 1) {
+    return 'en_progreso';
   }
+  
+  // Default: primer estado
+  const statusMap = {
+    'open': 'abiertos',
+    'in_progress': 'en_progreso',
+    'done': 'cerrados',
+    'canceled': 'cancelados',
+  };
+  
+  return statusMap[statusArray[0]] || null;
+}
 
-  const statusArg = mapStatusToArg(ai.status);
-  if (statusArg) parts.push(statusArg);
+// ──────────────────────────────────────────────────────────────
+// Construir comando /tickets desde query parseada
+// ──────────────────────────────────────────────────────────────
 
-  const place = ai.place ? String(ai.place).trim() : '';
-  if (place) parts.push(`buscar ${place}`);
-
+function buildCommandFromQuery(query) {
+  if (!query || !query.isQuery) return null;
+  
+  const parts = [];
+  
+  // Área
+  if (query.areas && query.areas.length > 0) {
+    parts.push(query.areas[0]);
+  }
+  
+  // Estado
+  const statusArg = mapStatusToArg(query.status);
+  if (statusArg) {
+    parts.push(statusArg);
+  }
+  
+  // Búsqueda
+  if (query.searchText) {
+    parts.push(`buscar ${query.searchText}`);
+  }
+  
+  // Folio específico
+  if (query.folio) {
+    return `/tickets detalle ${query.folio}`;
+  }
+  
   const args = parts.join(' ').trim();
   return args ? `/tickets ${args}` : '/tickets';
 }
 
+// ──────────────────────────────────────────────────────────────
+// API Principal
+// ──────────────────────────────────────────────────────────────
+
 /**
- * ✅ API PRINCIPAL (corregida)
+ * Intenta convertir texto en lenguaje natural a comando /tickets
+ * @param {object} params - { text, context }
+ * @returns {object} { command, confidence, reason }
  */
 async function buildNLCommand({ text, context = {} }) {
   const body = String(text || '').trim();
-  if (!body) return { command: null, confidence: 0, reason: 'empty_text' };
-
-  // ✅ GUARD 1: Si parece reporte, NO convertir a comando
-  if (looksLikeReport(body)) {
+  
+  if (!body) {
+    return { command: null, confidence: 0, reason: 'empty_text' };
+  }
+  
+  // Verificar si tenemos el parser
+  if (!ticketQueryNL) {
+    return { command: null, confidence: 0, reason: 'parser_missing' };
+  }
+  
+  // Parsear la consulta
+  const query = ticketQueryNL.parseTicketQuery(body, context);
+  
+  // Si no es consulta, retornar null
+  if (!query.isQuery) {
     if (DEBUG) {
-      console.log('[NL-CMD] BYPASS: parece reporte, no comando', {
+      console.log('[NL-CMD] BYPASS:', query._rejected || 'not_a_query', {
         text: body.substring(0, 50)
       });
     }
-    return { command: null, confidence: 0, reason: 'looks_like_incident_report' };
+    return { 
+      command: null, 
+      confidence: 0, 
+      reason: query._rejected || 'not_a_query' 
+    };
   }
-
-  // ✅ GUARD 2: Si NO parece consulta, NO convertir
-  if (!looksLikeQuery(body)) {
-    if (DEBUG) {
-      console.log('[NL-CMD] BYPASS: no parece consulta de tickets', {
-        text: body.substring(0, 50)
-      });
-    }
-    return { command: null, confidence: 0, reason: 'not_a_query' };
-  }
-
-  const ticketsAI = getTicketsAI();
-  if (!ticketsAI || typeof ticketsAI.interpretTicketsQuery !== 'function') {
-    return { command: null, confidence: 0, reason: 'tickets_ai_missing' };
-  }
-
-  let ai = null;
-  try {
-    ai = await ticketsAI.interpretTicketsQuery({ text: body, context });
-  } catch (e) {
-    if (DEBUG) console.warn('[NL-CMD] interpretTicketsQuery err', e?.message || e);
-    return { command: null, confidence: 0, reason: 'tickets_ai_error' };
-  }
-
-  // ✅ GUARD 3: Si la IA dice que NO es tickets_query, respetar
-  if (ai && ai.is_tickets_query !== true) {
-    if (DEBUG) {
-      console.log('[NL-CMD] BYPASS: IA dice que no es tickets_query', {
-        text: body.substring(0, 50),
-        ai_reason: ai.rationale || ai.reason
-      });
-    }
-    return { command: null, confidence: 0, reason: 'ai_not_tickets_query' };
-  }
-
-  const cmd = buildTicketsCommandFromAI(ai, body);
-
-  const out = {
-    command: cmd,
-    confidence: Number(ai?.confidence || 0),
-    reason: ai?.rationale || ai?.reason || 'ok',
-    raw: ai || null
-  };
-
+  
+  // Construir comando
+  const command = buildCommandFromQuery(query);
+  
   if (DEBUG) {
-    console.log('[NL-CMD] out', {
-      from: body,
-      to: out.command,
-      confidence: out.confidence,
-      reason: out.reason
+    console.log('[NL-CMD] converted', {
+      from: body.substring(0, 50),
+      to: command,
+      queryType: query.queryType,
+      status: query.status,
+      areas: query.areas,
     });
   }
-
-  return out;
+  
+  return {
+    command,
+    confidence: 0.9,
+    reason: 'parsed_successfully',
+    query, // Para debugging
+  };
 }
 
 module.exports = { buildNLCommand };

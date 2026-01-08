@@ -143,6 +143,20 @@
       "habitacion 1204"
     ]
   },
+    {
+    "id": "hab_pri_a_1205",
+    "label": "Habitación 1205",
+    "type": "habitacion",
+    "tower": "Principal",
+    "parent": "tower_principal_A",
+    "floor": "12",
+    "room_number": "1205",
+    "aliases": [
+      "hab 1205",
+      "rm 1205",
+      "habitacion 1205"
+    ]
+  },
   {
     "id": "hab_pri_a_1301",
     "label": "Habitación 1301",

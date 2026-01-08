@@ -2,6 +2,22 @@
 const DEBUG = (process.env.VICEBOT_DEBUG || '1') === '1';
 const TICKETS_AI_ENABLED = (process.env.VICEBOT_TICKETS_AI || '1') === '1';
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SEGURIDAD CENTRALIZADA
+// ═══════════════════════════════════════════════════════════════════════════
+const { checkAccess, getAccessDeniedMessage } = require('../state/userAccess');
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SISTEMA DE SOLICITUD DE ACCESO
+// ═══════════════════════════════════════════════════════════════════════════
+const { 
+  getAccessDeniedMessageAsync, 
+  handleAccessRequest, 
+  handleAdminDecision,
+  hasPendingRequest,
+  hasActiveAccessSession,
+} = require('../state/accessRequest');
+
 // ✅ safeReply (ya lo pegaste)
 const { safeReply, isSessionClosedError } = require('./safeReply');
 
@@ -23,6 +39,9 @@ const { maybeHandleGroupCancel } = require('../router/routeGroupsUpdate');
 
 // ✅ Router de consultas de tickets con lenguaje natural
 const { maybeHandleTicketQuery } = require('../router/routeTicketQuery');
+
+// ✅ Router de generación de reportes con lenguaje natural
+const { maybeHandleReportQuery } = require('../router/routeReportQuery');
 
 // ✅ FIX: tu router NI exporta handleTurn, no handleNITurn
 const { handleTurn } = require('../router/routeIncomingNI');
@@ -172,6 +191,91 @@ async function handleIncomingMessage(client, msg, opts = {}) {
       console.log('[CORE-ROUTER] [MSG] in', { chatId, body: body || '(vacío / media)' });
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // PRIMERO: Verificar si es un admin procesando solicitud de acceso
+    // Métodos soportados:
+    // 1. Citar mensaje de solicitud y responder: si, no, si admin
+    // 2. Comando directo: aprobar/rechazar NUMERO
+    // ═══════════════════════════════════════════════════════════════════════
+    const isQuotedResponse = msg.hasQuotedMsg && /^(si|sí|no|yes|aprobar|rechazar|ok|dale|va|nope|nel)\b/i.test(body);
+    const isDirectCommand = /^(aprobar|rechazar|approve|reject)\s+\d+/i.test(body);
+    
+    if (isQuotedResponse || isDirectCommand) {
+      try {
+        const result = await handleAdminDecision(client, msg);
+        if (result.handled) {
+          if (waId) markMessageHandled(waId);
+          return true;
+        }
+      } catch (e) {
+        if (DEBUG) console.warn('[CORE-ROUTER] adminDecision err', e?.message);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // GATE DE SEGURIDAD CENTRALIZADO
+    // Debe ejecutarse ANTES de cualquier router
+    // ═══════════════════════════════════════════════════════════════════════
+    const access = checkAccess(msg);
+    
+    if (!access.allowed) {
+      if (DEBUG) {
+        console.log('[CORE-ROUTER] access denied', { 
+          reason: access.reason, 
+          channel: access.channel,
+          chatId: chatId ? `...${chatId.slice(-10)}` : 'unknown'
+        });
+      }
+      
+      // Solo responder en DM, no en grupos ni broadcasts
+      if (access.channel === 'dm') {
+        // ═══════════════════════════════════════════════════════════════════
+        // SISTEMA DE SOLICITUD DE ACCESO
+        // Si el usuario ya tiene sesión activa, solicitud pendiente o envía datos, procesar
+        // Si es primera vez, mostrar mensaje con IA
+        // ═══════════════════════════════════════════════════════════════════
+        
+        // Verificar si el mensaje parece una solicitud de acceso (tiene datos)
+        const looksLikeAccessRequest = body && (
+          body.length >= 2 && 
+          /[a-záéíóúñ]{2,}/i.test(body) && // Tiene palabras
+          !body.startsWith('/') // No es comando
+        );
+        
+        // Si ya tiene sesión activa, solicitud pendiente o parece enviar datos, procesar
+        const hasActiveSession = hasActiveAccessSession(chatId) || hasPendingRequest(chatId);
+        
+        if (hasActiveSession || looksLikeAccessRequest) {
+          try {
+            const result = await handleAccessRequest(client, msg);
+            if (result.handled) {
+              if (waId) markMessageHandled(waId);
+              return true;
+            }
+          } catch (e) {
+            if (DEBUG) console.warn('[CORE-ROUTER] accessRequest err', e?.message);
+          }
+        }
+        
+        // Primera vez o mensaje no procesable - mostrar invitación con IA
+        try {
+          const deniedMessage = await getAccessDeniedMessageAsync();
+          await safeReply(msg, deniedMessage);
+        } catch (e) {
+          if (DEBUG) console.warn('[CORE-ROUTER] access denied reply err', e?.message);
+          // Fallback a mensaje estático
+          try {
+            await safeReply(msg, getAccessDeniedMessage());
+          } catch {}
+        }
+      }
+      
+      return false;
+    }
+    
+    // Exponer info de acceso para routers downstream
+    msg._access = access;
+
     // Si por alguna razón entra un comando aquí, intentar manejarlo
     if (body.startsWith('/')) {
       try {
@@ -190,22 +294,7 @@ async function handleIncomingMessage(client, msg, opts = {}) {
 
     // 1) Grupo: actualizaciones de estado (done/progress/cancel), consultas y evidencias
     if (isGroupId(chatId)) {
-      // ✅ NUEVO: Si tiene MEDIA + CITA, priorizar routeTeamFeedback para enviar evidencia al emisor
-      // Esto permite que "Listo" + foto se envíe al solicitante
-      if (msg.hasMedia && msg.hasQuotedMsg) {
-        try {
-          const handledTeam = await maybeHandleTeamFeedback(client, msg);
-          if (handledTeam) {
-            if (waId) markMessageHandled(waId);
-            return true;
-          }
-        } catch (e) {
-          if (DEBUG) console.warn('[CORE-ROUTER] teamFeedback(priority) err', e?.message || e);
-          if (isSessionClosedError(e)) return false;
-        }
-      }
-      
-      // ✅ SEGUNDO: routeGroupsUpdate para actualizaciones de estado (sin media)
+      // ✅ PRIMERO: routeGroupsUpdate para actualizaciones de estado
       // Maneja: "Listo", "Vamos", "Cancela, esto no es mío", etc.
       try {
         const handledUpdate = await maybeHandleGroupCancel(client, msg);
@@ -218,7 +307,7 @@ async function handleIncomingMessage(client, msg, opts = {}) {
         if (isSessionClosedError(e)) return false;
       }
 
-      // ✅ TERCERO: Consultas de tickets con lenguaje natural
+      // ✅ SEGUNDO: Consultas de tickets con lenguaje natural
       // Maneja: "tickets pendientes", "buscar cocina", etc.
       try {
         const handledQuery = await maybeHandleTicketQuery(client, msg);
@@ -231,7 +320,7 @@ async function handleIncomingMessage(client, msg, opts = {}) {
         if (isSessionClosedError(e)) return false;
       }
 
-      // ✅ CUARTO: routeTeamFeedback para evidencias (fotos sin texto de estado) y mensajes citando ticket
+      // ✅ TERCERO: routeTeamFeedback para evidencias (fotos) y mensajes citando ticket
       // Solo procesa si tiene FOTO o CITA el mensaje del ticket
       try {
         const handledTeam = await maybeHandleTeamFeedback(client, msg);
@@ -251,7 +340,38 @@ async function handleIncomingMessage(client, msg, opts = {}) {
     // 2) DM
     const niContext = getNiContextForChat(chatId);
 
-    // ✅ PRIMERO: Consultas de tickets con lenguaje natural (antes de NL→CMD)
+    // ✅ CERO: Verificar si es respuesta a un menú de status activo
+    // Debe ejecutarse ANTES de los routers de IA para no interceptar selecciones numéricas
+    if (!niContext.hasActiveNISession && body && /^\s*[1-9]\s*$/.test(body)) {
+      try {
+        const handledMenu = await maybeHandleRequesterReply(client, msg);
+        if (handledMenu) {
+          if (waId) markMessageHandled(waId);
+          return true;
+        }
+      } catch (e) {
+        if (DEBUG) console.warn('[CORE-ROUTER] menuSelection err', e?.message || e);
+        if (isSessionClosedError(e)) return false;
+      }
+    }
+
+    // ✅ PRIMERO: Solicitudes de reportes (exportar Excel)
+    // Maneja: "generar reporte", "exportar tickets de IT", "reporte de hoy"
+    // Solo si NO hay sesión N-I activa
+    if (!niContext.hasActiveNISession && body) {
+      try {
+        const handledReport = await maybeHandleReportQuery(client, msg);
+        if (handledReport) {
+          if (waId) markMessageHandled(waId);
+          return true;
+        }
+      } catch (e) {
+        if (DEBUG) console.warn('[CORE-ROUTER] reportQuery(DM) err', e?.message || e);
+        if (isSessionClosedError(e)) return false;
+      }
+    }
+
+    // ✅ SEGUNDO: Consultas de tickets con lenguaje natural (antes de NL→CMD)
     // Maneja: "tickets pendientes de IT", "mis tickets", "buscar cocina", etc.
     // Solo si NO hay sesión N-I activa
     if (!niContext.hasActiveNISession && body) {
