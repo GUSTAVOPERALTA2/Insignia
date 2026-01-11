@@ -222,85 +222,6 @@ function findUserByPhone(phoneId) {
   return null;
 }
 
-/**
- * Busca usuario por notifyName/pushname comparando con users.json
- * Usa coincidencia flexible (nombre completo, primer nombre, apellido invertido)
- */
-function findUserByName(notifyName) {
-  if (!notifyName) return null;
-  const users = loadUsersCache();
-  if (!users) return null;
-  
-  const searchName = String(notifyName).trim().toLowerCase();
-  if (!searchName || searchName.length < 2) return null;
-  
-  // Normalizar para comparación (quitar acentos)
-  const normalize = (str) => str.toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9\s]/g, '').trim();
-  
-  const searchNorm = normalize(searchName);
-  const searchParts = searchNorm.split(/\s+/).filter(p => p.length > 1);
-  
-  let bestMatch = null;
-  let bestScore = 0;
-  
-  for (const [userId, userData] of Object.entries(users)) {
-    const userName = userData.nombre || userData.name || '';
-    if (!userName) continue;
-    
-    const userNorm = normalize(userName);
-    const userParts = userNorm.split(/\s+/).filter(p => p.length > 1);
-    
-    // Coincidencia exacta
-    if (userNorm === searchNorm) {
-      return { id: userId, ...userData };
-    }
-    
-    // Calcular score de coincidencia
-    let score = 0;
-    
-    // Búsqueda por partes (nombre + apellido)
-    for (const searchPart of searchParts) {
-      for (const userPart of userParts) {
-        if (userPart === searchPart) {
-          score += 3; // Match exacto de parte
-        } else if (userPart.startsWith(searchPart) || searchPart.startsWith(userPart)) {
-          score += 2; // Match parcial
-        } else if (userPart.includes(searchPart) || searchPart.includes(userPart)) {
-          score += 1; // Contiene
-        }
-      }
-    }
-    
-    // Nombres invertidos (ej: "Peralta Gustav" vs "Gustavo Peralta")
-    if (searchParts.length >= 2 && userParts.length >= 2) {
-      const searchReversed = [...searchParts].reverse();
-      for (let i = 0; i < Math.min(searchReversed.length, userParts.length); i++) {
-        if (userParts[i].startsWith(searchReversed[i].slice(0, 4)) || 
-            searchReversed[i].startsWith(userParts[i].slice(0, 4))) {
-          score += 2;
-        }
-      }
-    }
-    
-    if (score > bestScore && score >= 3) {
-      bestScore = score;
-      bestMatch = { id: userId, ...userData };
-    }
-  }
-  
-  if (DEBUG && bestMatch) {
-    console.log('[GROUP-UPDATE] findUserByName match', { 
-      search: notifyName, 
-      found: bestMatch.nombre,
-      score: bestScore 
-    });
-  }
-  
-  return bestMatch;
-}
-
 async function resolveAuthorName(msg, client) {
   const authorId = msg.author || msg.from;
   let realPhoneId = null;
@@ -352,20 +273,19 @@ async function resolveAuthorName(msg, client) {
     if (userFromCache) {
       const name = userFromCache.nombre || userFromCache.name;
       const cargo = userFromCache.cargo;
-      return { name, cargo, source: 'users.json_phone' };
+      return { name, cargo, source: 'users.json' };
     }
   }
   
-  // ✅ MEJORADO: Buscar por nombre usando findUserByName (maneja nombres invertidos)
   if (notifyName) {
-    const userByName = findUserByName(notifyName);
-    if (userByName) {
-      const name = userByName.nombre || userByName.name;
-      const cargo = userByName.cargo;
-      return { name, cargo, source: 'users.json_name' };
+    const users = loadUsersCache();
+    for (const [userId, userData] of Object.entries(users)) {
+      const userName = userData.nombre || userData.name || '';
+      if (userName.toLowerCase().includes(notifyName.toLowerCase()) ||
+          notifyName.toLowerCase().includes(userName.toLowerCase().split(' ')[0])) {
+        return { name: userName, cargo: userData.cargo, source: 'notifyName_match' };
+      }
     }
-    
-    // Si no encontró match suficiente, retornar notifyName sin cargo
     return { name: notifyName, cargo: null, source: 'notifyName' };
   }
   
@@ -527,6 +447,10 @@ async function tryUpdateByFolio(client, msg, newStatus) {
   const folios = parseFoliosFromText(text);
   if (!folios.length) return null;
 
+  // Resolver nombre del autor una vez para todos los folios
+  const authorInfo = await resolveAuthorName(msg, client);
+  const authorName = formatAuthorDisplay(authorInfo);
+
   const results = [];
   for (const folio of folios) {
     try {
@@ -560,7 +484,8 @@ async function tryUpdateByFolio(client, msg, newStatus) {
           source: 'folio_explicit', 
           newStatus,
           text,
-          author: msg.author || msg.from
+          author: msg.author || msg.from,
+          author_name: authorName
         }
       });
 
@@ -636,6 +561,10 @@ async function tryUpdateByQuotedMessage(client, msg, newStatus) {
       await updateIncidentStatus(inc.id, newStatus);
     }
 
+    // Resolver nombre del autor para el evento
+    const authorInfo = await resolveAuthorName(msg, client);
+    const authorName = formatAuthorDisplay(authorInfo);
+
     await appendIncidentEvent(inc.id, {
       event_type: 'group_status_update',
       wa_msg_id: msg.id?._serialized || null,
@@ -643,7 +572,8 @@ async function tryUpdateByQuotedMessage(client, msg, newStatus) {
         source: 'quoted_message', 
         newStatus,
         text: msg.body,
-        author: msg.author || msg.from
+        author: msg.author || msg.from,
+        author_name: authorName
       }
     });
 
@@ -771,6 +701,10 @@ async function updateTicketAndNotify(client, msg, inc, newStatus, source) {
       await updateIncidentStatus(inc.id, newStatus);
     }
 
+    // Resolver nombre del autor para el evento
+    const authorInfo = await resolveAuthorName(msg, client);
+    const authorName = formatAuthorDisplay(authorInfo);
+
     await appendIncidentEvent(inc.id, {
       event_type: 'group_status_update',
       wa_msg_id: msg.id?._serialized || null,
@@ -778,7 +712,8 @@ async function updateTicketAndNotify(client, msg, inc, newStatus, source) {
         source,
         newStatus,
         text: msg.body,
-        author: msg.author || msg.from
+        author: msg.author || msg.from,
+        author_name: authorName
       }
     });
 
@@ -849,10 +784,19 @@ async function maybeHandleSessionResponse(client, msg) {
           wa_msg_id: msg.id?._serialized || null,
         });
         
+        // Resolver nombre del autor para el evento
+        const authorInfo = await resolveAuthorName(msg, client);
+        const authorName = formatAuthorDisplay(authorInfo);
+        
         await appendIncidentEvent(s.incident.id, {
           event_type: 'group_cancel_ack',
           wa_msg_id: msg.id?._serialized || null,
-          payload: { source: 'confirm_one_open', text }
+          payload: { 
+            source: 'confirm_one_open', 
+            text,
+            author: msg.author || msg.from,
+            author_name: authorName
+          }
         });
         
         await notifyRequester(client, msg, s.incident, 'canceled');
