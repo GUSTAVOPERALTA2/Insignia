@@ -4,6 +4,11 @@
  * - confirm/preview: confirmación de ticket individual
  * - confirm_batch: confirmación de múltiples tickets
  * - confirm_new_ticket_decision: manejo de decisión para nuevo ticket con lugar diferente
+ *
+ * ✅ Cambios incluidos (anti doble-dispatch por áreas):
+ * - Cuando cambia el área: SIEMPRE se reemplaza draft.areas = [AREA]
+ * - Antes de enviar (confirm individual / batch): forzamos draft.areas = [area_destino]
+ * - En edición IA (handleEditSingleTicket): normalizamos área y reemplazamos la lista
  */
 
 const {
@@ -21,8 +26,26 @@ const {
 
 const { interpretEditMessage } = require('./interpretEditMessage');
 
-// Áreas permitidas (exportar desde shared.js en el futuro)
+// Áreas permitidas
 const ALLOWED_AREAS = new Set(['RS', 'AMA', 'MAN', 'IT', 'SEG']);
+
+/**
+ * Helper defensivo: alinear areas[] con area_destino
+ */
+function syncAreasWithPrimary(s, draft) {
+  const d = draft || s?.draft;
+  if (!d) return;
+
+  const a = (d.area_destino || '').toString().trim().toUpperCase();
+  if (!a || !ALLOWED_AREAS.has(a)) return;
+
+  d.area_destino = a;
+  d.areas = [a];
+
+  // 👇 CLAVE: si tu sistema usa session areas, aquí lo blindas
+  if (Array.isArray(s.areas)) s.areas = [a];
+  if (Array.isArray(s._areas)) s._areas = [a];
+}
 
 /**
  * Handler IA para edición de UN SOLO ticket dentro de modo 'confirm'
@@ -55,6 +78,10 @@ async function handleEditSingleTicket(ctx) {
   // Confirmación directa: enviar
   if (isYes(t)) {
     if (DEBUG) console.log('[EDIT-SINGLE] user confirmed send');
+
+    // ✅ defensivo: evitar doble dispatch por areas viejas
+    syncAreasWithPrimary(s, draft);
+
     try {
       const result = await finalizeAndDispatch({ client, msg, session: s });
       if (result?.success) {
@@ -141,7 +168,8 @@ async function handleEditSingleTicket(ctx) {
           await replySafe(msg,
             `⚠️ No hay un match exacto para el lugar "${value}". Encontré coincidencias posibles:\n\n` +
             placeRes.candidates.slice(0, 5).map((c, i) => `• ${i + 1}. ${c.label || c}`).join('\n') +
-            `\n\nResponde con el número para elegir, o escribe el lugar exactamente como aparece.`);
+            `\n\nResponde con el número para elegir, o escribe el lugar exactamente como aparece.`
+          );
           setMode(s, 'choose_place_from_candidates');
           return true;
         } else {
@@ -163,18 +191,33 @@ async function handleEditSingleTicket(ctx) {
             await replySafe(msg,
               `⚠️ LUGAR NO RECONOCIDO: "${value}".\n\nPosibles sugerencias:\n` +
               suggestions.slice(0, 5).map((c, i) => `• ${i + 1}. ${c.label || c}`).join('\n') +
-              `\n\nResponde con el número para elegir, o escribe el lugar exactamente como aparece.`);
+              `\n\nResponde con el número para elegir, o escribe el lugar exactamente como aparece.`
+            );
             setMode(s, 'choose_place_from_candidates');
             return true;
           }
           await replySafe(msg,
             `⚠️ LUGAR NO RECONOCIDO: "${value}".\n` +
-            `El lugar debe existir en el catálogo. Escribe el lugar de nuevo o usa un nombre más específico (p.ej. "Front Desk", "Lobby", "Habitación 2301").`);
+            `El lugar debe existir en el catálogo. Escribe el lugar de nuevo o usa un nombre más específico (p.ej. "Front Desk", "Lobby", "Habitación 2301").`
+          );
           return true;
         }
 
       } else if (field === 'area_destino' || field === 'area') {
-        draft.area_destino = String(value).toLowerCase();
+        // ✅ normaliza y reemplaza lista (no push)
+        const raw = String(value).trim();
+        let areaCode = null;
+        try {
+          areaCode = typeof normalizeAreaCode === 'function' ? normalizeAreaCode(raw) : raw;
+        } catch (e) {
+          areaCode = raw;
+        }
+        areaCode = String(areaCode || '').trim().toUpperCase();
+
+        if (ALLOWED_AREAS.has(areaCode)) {
+          draft.area_destino = areaCode;
+          draft.areas = [areaCode];
+        }
 
       } else {
         const piece = String(value).trim();
@@ -188,7 +231,9 @@ async function handleEditSingleTicket(ctx) {
     s.draft = draft;
     s._editingDraft = draft;
 
-    const preview = (typeof formatPreviewFn === 'function') ? formatPreviewFn(draft) : JSON.stringify(draft, null, 2);
+    const preview = (typeof formatPreviewFn === 'function')
+      ? formatPreviewFn(draft)
+      : JSON.stringify(draft, null, 2);
 
     const resp =
       `✅ Cambios aplicados:\n\n` +
@@ -207,7 +252,7 @@ async function handleEditSingleTicket(ctx) {
  * Handler para modo confirm/preview
  */
 async function handleConfirmMode(ctx) {
-  const { s, msg, text, replySafe, setMode } = ctx;
+  const { s, msg, text, replySafe } = ctx;
 
   if (!text) return false;
 
@@ -264,6 +309,9 @@ async function handleConfirmYes(ctx) {
     await replySafe(msg, '⚠️ Faltan datos:\n\n' + preview);
     return true;
   }
+
+  // ✅ defensivo: evitar doble dispatch por areas viejas
+  syncAreasWithPrimary(s, s.draft);
 
   try {
     const result = await finalizeAndDispatch({ client, msg, session: s });
@@ -379,45 +427,77 @@ async function handlePlaceChange(ctx) {
 
     await replySafe(msg,
       `⚠️ LUGAR NO RECONOCIDO: "${placeText}".\n` +
-      `El lugar debe existir en el catálogo. Escribe el lugar de nuevo o usa un nombre más específico (p.ej. "Front Desk", "Lobby", "Habitación 2301").`);
+      `El lugar debe existir en el catálogo. Escribe el lugar de nuevo o usa un nombre más específico (p.ej. "Front Desk", "Lobby", "Habitación 2301").`
+    );
     return true;
   }
 }
 
 /**
- * Cambio de área
+ * Cambio de área (REEMPLAZA areas[] siempre)
  */
 async function handleAreaChange(ctx) {
-  const { s, msg, text, replySafe, setMode, setDraftField, addArea } = ctx;
+  const { s, msg, text, replySafe, setMode, setDraftField } = ctx;
 
-  const areaMatch = text.match(/(?:para|de|área[:\s]*)\s*(it|mantenimiento|man|ama|hskp|seguridad|seg|rs|room\s*service)/i);
+  const areaMatch = (text || '').match(
+    /(?:para|de|área[:\s]*)\s*(it|mantenimiento|man|ama|hskp|seguridad|seg|rs|room\s*service)/i
+  );
 
   if (areaMatch) {
     const areaMap = {
-      'it': 'it', 'mantenimiento': 'man', 'man': 'man',
-      'ama': 'ama', 'hskp': 'ama',
-      'seguridad': 'seg', 'seg': 'seg',
-      'rs': 'rs', 'room service': 'rs', 'roomservice': 'rs'
+      it: 'IT',
+      mantenimiento: 'MAN',
+      man: 'MAN',
+      ama: 'AMA',
+      hskp: 'AMA',
+      seguridad: 'SEG',
+      seg: 'SEG',
+      rs: 'RS',
+      roomservice: 'RS',
+      'room service': 'RS',
     };
-    const areaCode = areaMap[areaMatch[1].toLowerCase().replace(/\s+/g, '')] || areaMatch[1].toLowerCase();
 
+    const rawKey = areaMatch[1] || '';
+    const key = rawKey.toLowerCase().replace(/\s+/g, ' ').trim();
+    const mapped = areaMap[key] || areaMap[key.replace(/\s+/g, '')] || key.toUpperCase();
+
+    const areaCode = String(mapped || '').trim().toUpperCase();
+
+    // ✅ valida contra permitidas
+    if (!ALLOWED_AREAS.has(areaCode)) {
+      await replySafe(
+        msg,
+        `⚠️ Área inválida: *${mapped}*. Usa: RS, AMA, MAN, IT, SEG.`
+      );
+      setMode(s, 'confirm');
+      return true;
+    }
+
+    // ✅ set primary
     setDraftField(s, 'area_destino', areaCode);
-    addArea(s, areaCode);
+
+    // ✅ IMPORTANT: reemplazar lista (no push)
+    s.draft.areas = [areaCode];
+
+    // ✅ CLAVE: si tu dispatch usa session.areas, también reemplázala
+    if (Array.isArray(s.areas)) s.areas = [areaCode];
+    if (Array.isArray(s._areas)) s._areas = [areaCode];
 
     const preview = formatPreviewMessage(s.draft);
-    await replySafe(msg, `✅ Área: *${areaLabel(areaCode)}*\n\n` + preview);
+    await replySafe(msg, `✅ Área: *${areaLabel(areaCode)}*\n\n${preview}`);
     setMode(s, 'confirm');
     return true;
   }
 
   setMode(s, 'choose_area_multi');
-  await replySafe(msg,
+  await replySafe(
+    msg,
     '🏷️ Elige el área destino:\n\n' +
-    '• *1* — Mantenimiento\n' +
-    '• *2* — IT\n' +
-    '• *3* — HSKP\n' +
-    '• *4* — Room Service\n' +
-    '• *5* — Seguridad'
+      '• *1* — Mantenimiento\n' +
+      '• *2* — IT\n' +
+      '• *3* — HSKP\n' +
+      '• *4* — Room Service\n' +
+      '• *5* — Seguridad'
   );
   return true;
 }
@@ -520,7 +600,6 @@ async function handleNewIncidentCandidate(ctx) {
 
 /**
  * Handler para modo confirm_new_ticket_decision
- * Maneja la respuesta del usuario para crear nuevo ticket o reemplazar lugar
  */
 async function handleConfirmNewTicketDecision(ctx) {
   const { s, text, replySafe, setMode } = ctx;
@@ -536,9 +615,16 @@ async function handleConfirmNewTicketDecision(ctx) {
     s._multipleTickets = s._multipleTickets || [];
     if (s.draft && !s.draft._migratedToMultiple) {
       s.draft._migratedToMultiple = true;
+      // ✅ normaliza antes de migrar
+      syncAreasWithPrimary(s, s.draft);
       s._multipleTickets.push({ ...s.draft });
     }
-    s._multipleTickets.push({ ...s._pendingNewTicket, _ticketNum: s._multipleTickets.length + 1 });
+
+    // ✅ normaliza el nuevo también
+    const pending = { ...s._pendingNewTicket };
+    syncAreasWithPrimary(s, pending);
+
+    s._multipleTickets.push({ ...pending, _ticketNum: s._multipleTickets.length + 1 });
 
     s.draft = {};
     delete s._pendingNewTicket;
@@ -552,6 +638,9 @@ async function handleConfirmNewTicketDecision(ctx) {
     s.draft.lugar = s._pendingNewTicket.lugar;
     s.draft.area_destino = s._pendingNewTicket.area_destino || s.draft.area_destino;
     s.draft.descripcion = s._pendingNewTicket.descripcion;
+
+    // ✅ defensivo: alinear areas
+    syncAreasWithPrimary(s, draft);
 
     delete s._pendingNewTicket;
     setMode(s, 'confirm');
@@ -610,6 +699,8 @@ async function handleConfirmBatch(ctx) {
         }
 
         s.draft.area_destino = areaToUse;
+        // ✅ IMPORTANT: evitar doble dispatch por areas viejas
+        s.draft.areas = [areaToUse];
 
         if (!hasRequiredDraft(s.draft)) {
           if (DEBUG) console.warn('[CONFIRM_BATCH] missing fields', { idx: i, draft: s.draft });
@@ -725,7 +816,10 @@ async function handleConfirmBatch(ctx) {
         s.draft = originalDraft;
         return true;
       }
+
       s.draft.area_destino = areaToUse;
+      // ✅ IMPORTANT: evitar doble dispatch por areas viejas
+      s.draft.areas = [areaToUse];
 
       if (!hasRequiredDraft(s.draft)) {
         await replySafe(msg, `Faltan campos en el ticket ${ticketNum + 1}. Usa *editar ${ticketNum + 1}* para completarlo.`);

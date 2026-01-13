@@ -11,6 +11,8 @@ const {
   formatPreviewMessage,
 } = require('./shared');
 
+
+
 /**
  * Detecta si el mensaje parece una corrección/edición en vez de un lugar
  * Ejemplos: "perdón es la impresora", "no, es el aire", "quise decir...", "me equivoqué"
@@ -862,139 +864,6 @@ async function handleAskPlaceConflict(ctx) {
 }
 
 /**
- * Handler para modo choose_place_from_candidates
- */
-async function handleChoosePlaceFromCandidates(ctx) {
-  const {
-    s, msg, text, replySafe, setMode, setDraftField,
-    normalizeAndSetLugar, autoAssignArea, refreshIncidentDescription,
-    detectPlace
-  } = ctx;
-
-  const candidates = s._placeCandidates || [];
-  const t = norm(text);
-
-  if (DEBUG) console.log('[CHOOSE_PLACE] handling', { response: text, candidates: candidates.length });
-
-  // Cancelar
-  if (/^cancelar?$/i.test(t) || /^ninguno$/i.test(t)) {
-    s._placeCandidates = [];
-    setMode(s, 'ask_place');
-    await replySafe(msg, '📍 Escribe el lugar manualmente:');
-    return true;
-  }
-
-  // Selección por número
-  const numMatch = t.match(/^(\d+)$/);
-  if (numMatch) {
-    const idx = parseInt(numMatch[1], 10) - 1;
-    if (idx >= 0 && idx < candidates.length) {
-      const selected = candidates[idx];
-      const placeValue = selected.label || selected.value || selected;
-
-      setDraftField(s, 'lugar', placeValue);
-      s._placeCandidates = [];
-
-      if (!s.draft.area_destino && autoAssignArea) {
-        await autoAssignArea(s);
-      }
-
-      if (refreshIncidentDescription && s.draft.descripcion) {
-        await refreshIncidentDescription(s, s.draft.descripcion);
-      }
-
-      // Usar helper para manejar múltiples tickets
-      return await handlePlaceCompleted(ctx, placeValue);
-    }
-  }
-
-  // Selección por texto (buscar coincidencia en candidatos)
-  const match = candidates.find(c => {
-    const val = norm(c.label || c.value || c);
-    return val.includes(t) || t.includes(val);
-  });
-
-  if (match) {
-    const placeValue = match.label || match.value || match;
-    setDraftField(s, 'lugar', placeValue);
-    s._placeCandidates = [];
-
-    if (!s.draft.area_destino && autoAssignArea) {
-      await autoAssignArea(s);
-    }
-
-    if (refreshIncidentDescription && s.draft.descripcion) {
-      await refreshIncidentDescription(s, s.draft.descripcion);
-    }
-
-    // Usar helper para manejar múltiples tickets
-    return await handlePlaceCompleted(ctx, placeValue);
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // NUEVO: Verificar si es corrección antes de buscar lugar
-  // ═══════════════════════════════════════════════════════════════
-  
-  if (looksLikeCorrection(text) || (looksLikeProblemDescription(text) && !looksLikeValidPlace(text))) {
-    // Es una corrección, volver a ask_place para manejarla
-    s._placeCandidates = [];
-    return handleAskPlace(ctx);
-  }
-
-  // Intentar buscar nuevo lugar en catálogo
-  let placeResult = null;
-  try {
-    placeResult = await detectPlace(text, { preferRoomsFirst: true });
-  } catch (e) {
-    if (DEBUG) console.warn('[CHOOSE_PLACE] detectPlace error', e?.message);
-  }
-
-  if (placeResult?.found || placeResult?.canonical_label) {
-    const lugar = placeResult.canonical_label || placeResult.label || placeResult.found;
-    setDraftField(s, 'lugar', lugar);
-    s._placeCandidates = [];
-
-    if (!s.draft.area_destino && autoAssignArea) {
-      await autoAssignArea(s);
-    }
-
-    // Usar helper para manejar múltiples tickets
-    return await handlePlaceCompleted(ctx, lugar);
-  }
-
-  // Si hay nuevas sugerencias
-  if (placeResult?.suggestions && placeResult.suggestions.length > 0) {
-    const suggestions = placeResult.suggestions.slice(0, 3);
-    s._placeCandidates = suggestions.map(sug => ({
-      label: sug.label,
-      via: 'fuzzy',
-      score: sug.similarity
-    }));
-    
-    const suggestionList = suggestions.map((sug, i) =>
-      `${i + 1}. *${sug.label}*`
-    ).join('\n');
-
-    await replySafe(msg,
-      `🤔 ¿Quisiste decir?\n\n${suggestionList}\n\n` +
-      `Responde el *número* o escribe otro lugar.`
-    );
-    return true;
-  }
-
-  // Mostrar opciones originales de nuevo
-  let options = '📍 No reconocí eso. Elige una opción:\n\n';
-  candidates.forEach((c, i) => {
-    const label = c.label || c.value || c;
-    options += `*${i + 1}.* ${label}\n`;
-  });
-  options += '\n• *cancelar* — escribir manualmente';
-
-  await replySafe(msg, options);
-  return true;
-}
-
-/**
  * Extrae códigos de área de un texto (igual que dialogInterpreter)
  */
 function extractAreasFromText(text) {
@@ -1203,8 +1072,6 @@ async function handlePlaceSelection(ctx) {
       return handleAskPlace(ctx);
     case 'ask_place_conflict':
       return handleAskPlaceConflict(ctx);
-    case 'choose_place_from_candidates':
-      return handleChoosePlaceFromCandidates(ctx);
     case 'ask_area_multiple':
       return handleAskAreaMultiple(ctx);
     case 'choose_area_single':
@@ -1214,4 +1081,4 @@ async function handlePlaceSelection(ctx) {
   }
 }
 
-module.exports = { handlePlaceSelection };
+module.exports = { handlePlaceSelection, handlePlaceCompleted };

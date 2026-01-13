@@ -19,27 +19,204 @@ const {
   cleanDescription,
 } = require('./shared');
 
+// ✅ Desambiguación “alberca/piscina” genérico (sin tocar placeExtractor)
+function isGenericPoolLugar(lugarLabel) {
+  const l = (lugarLabel || '').toLowerCase().trim();
+  return l === 'alberca / piscina (genérico)'.toLowerCase();
+}
+
+function userSaidPoolGeneric(text) {
+  const t = (text || '').toLowerCase();
+  const saidPool = /\b(alberca|piscina|pool)\b/.test(t);
+  const specified = /\b(familiar|adult|adultos|principal|main|kids|niños)\b/.test(t);
+  return saidPool && !specified;
+}
+
+function buildPoolCandidates() {
+  return [
+    { label: 'Alberca Familiar', via: 'disambiguation', score: 100 },
+    { label: 'Alberca de Adultos (Adults Pool)', via: 'disambiguation', score: 100 },
+    { label: 'Alberca Principal', via: 'disambiguation', score: 100 },
+  ];
+}
+
+async function askPoolDisambiguation(ctx) {
+  const { s, msg, replySafe, setMode } = ctx;
+
+  s._placeCandidates = buildPoolCandidates();
+  setMode(s, 'choose_place_from_candidates');
+
+  const list = s._placeCandidates.map((c, i) => `${i + 1}. *${c.label}*`).join('\n');
+
+  await replySafe(
+    msg,
+    `🤔 ¿A cuál *alberca* te refieres?\n\n` +
+      `${list}\n\n` +
+      `Responde el *número* (1, 2, 3).`
+  );
+
+  return true;
+}
+
 /**
  * Heurística para dividir texto en problemas cuando la IA no ayuda.
  */
 function splitMultipleProblemsHeuristic(text) {
-  const separators = [
+  if (!text || typeof text !== 'string') return [];
+
+  // -------------------------
+  // 1) Proteger patrones ":" que NO deben dividir
+  // -------------------------
+  const protect = (s) => {
+    const TIME_TOKEN = '__TIME_COLON__';
+    const IPPORT_TOKEN = '__IPPORT_COLON__';
+
+    // IP:puerto
+    s = s.replace(
+      /\b(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})\b/g,
+      (_m, ip, port) => `${ip}${IPPORT_TOKEN}${port}`
+    );
+
+    // Hora hh:mm
+    s = s.replace(
+      /\b(\d{1,2}):(\d{2})\b/g,
+      (_m, hh, mm) => `${hh}${TIME_TOKEN}${mm}`
+    );
+
+    return { s, TIME_TOKEN, IPPORT_TOKEN };
+  };
+
+  const restore = (s, TIME_TOKEN, IPPORT_TOKEN) => {
+    return s
+      .replace(new RegExp(TIME_TOKEN, 'g'), ':')
+      .replace(new RegExp(IPPORT_TOKEN, 'g'), ':');
+  };
+
+  const { s: protectedText, TIME_TOKEN, IPPORT_TOKEN } = protect(text);
+
+  // -------------------------
+  // 2) Helpers de “smart y”
+  // -------------------------
+  const stripCourtesy = (s) => {
+    // quita coletillas típicas que NO deben crear tickets
+    return (s || '')
+      .replace(/\b(por\s+favor|pls|porfa|gracias|grax|ok|vale|de\s+favor)\b\.?$/i, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  };
+
+  const hasProblemSignal = (s) => {
+    const t = (s || '').toLowerCase();
+
+    // verbos / estructuras de incidente
+    const verbish =
+      /\b(no\s+funciona|no\s+sirve|no\s+prende|no\s+enciende|no\s+hay|no\s+sale|no\s+llega|se\s+rompi[oó]|se\s+descompuso|se\s+cay[oó]|se\s+ator[oó]|se\s+tap[oó]|gotea|fuga|huele|ruido|vibra|tir[aá]\s+agua|se\s+inund[aá]|error|fall[aó])\b/i;
+
+    // solicitudes explícitas
+    const request =
+      /\b(solicita|solicito|necesito|necesitamos|requiero|requerimos|manden|enviar|traer|apoy(o|o\w*)|ayuda)\b/i;
+
+    // “cosas problema” (sustantivos típicos de reporte)
+    const nouns =
+      /\b(limpieza|toallas?|s[aá]banas?|amenidades|basura|mantenimiento|aire\s+acondicionado|clima|agua\s+caliente|agua\s+fr[ií]a|regadera|ba[nñ]o|wc|inodoro|lavabo|drenaje|internet|wifi|tv|tel[eé]fono|llave|puerta|luz|foco|contacto|cortina|coladera)\b/i;
+
+    return verbish.test(t) || request.test(t) || nouns.test(t);
+  };
+
+  const looksLikeListJoin = (left, right) => {
+    // Evitar dividir cuando es claramente una lista de sustantivos del MISMO asunto
+    const tL = (left || '').toLowerCase();
+    const tR = (right || '').toLowerCase();
+
+    // si ambos son cortos y sin verbos fuertes → probablemente lista
+    const shortish = (s) => (s.trim().length <= 22);
+
+    // si ninguno trae señal de problema → no dividir
+    if (!hasProblemSignal(tL) && !hasProblemSignal(tR)) return true;
+
+    // casos típicos “X y Y” dentro del mismo reporte
+    const sameTopicPairs = [
+      /\b(toallas?|s[aá]banas?|amenidades)\b/,
+      /\b(ba[nñ]o|regadera|wc|inodoro|lavabo|drenaje|coladera)\b/,
+      /\b(luz|foco|contacto)\b/,
+      /\b(internet|wifi|tv|tel[eé]fono)\b/,
+      /\b(puerta|llave|cerradura)\b/,
+    ];
+
+    const sharesTopic = sameTopicPairs.some((rx) => rx.test(tL) && rx.test(tR));
+
+    if (sharesTopic && shortish(left) && shortish(right)) return true;
+
+    // “por favor / gracias” del lado derecho
+    if (/^(por\s+favor|gracias|ok|vale)\b/i.test(tR)) return true;
+
+    return false;
+  };
+
+  const smartSplitByY = (chunk) => {
+    const base = stripCourtesy(chunk);
+    if (!base) return [];
+
+    // split tentativo
+    const pieces = base.split(/\s+y\s+/i).map(p => stripCourtesy(p)).filter(Boolean);
+    if (pieces.length <= 1) return [restore(base, TIME_TOKEN, IPPORT_TOKEN)];
+
+    // reconstruir con decisión “smart”
+    const out = [];
+    let acc = pieces[0];
+
+    for (let i = 1; i < pieces.length; i++) {
+      const next = pieces[i];
+
+      const left = acc;
+      const right = next;
+
+      const leftOk = left.length >= 8 && hasProblemSignal(left);
+      const rightOk = right.length >= 8 && hasProblemSignal(right);
+
+      // regla: separar si ambos lados parecen incidentes
+      const shouldSplit = (leftOk && rightOk) && !looksLikeListJoin(left, right);
+
+      if (shouldSplit) {
+        out.push(restore(left, TIME_TOKEN, IPPORT_TOKEN));
+        acc = right;
+      } else {
+        // no separar: pegamos de vuelta con " y "
+        acc = `${acc} y ${right}`.trim();
+      }
+    }
+
+    out.push(restore(acc, TIME_TOKEN, IPPORT_TOKEN));
+    return out.map(s => s.trim()).filter(s => s.length > 0);
+  };
+
+  // -------------------------
+  // 3) Separación “fuerte” primero (sin usar "y" directo)
+  // -------------------------
+  const strongSeps = [
     /\b(?:y\s+tambi[eé]n|adem[aá]s|tamb[ií]en\s+hay|y\s+adem[aá]s|y\s+otra\s+cosa|otra\s+cosa|adem[aá]s\s+de)\b/gi,
-    /[;:]\s*/,
-    /\b(?:y)\b/gi
+    /;\s*/g,
+    /:\s*/g,          // ":" ya protegido para horas/ip:puerto
+    /\n+/g,
+    /\s*•\s+/g,
   ];
 
-  let parts = [text];
-  for (const sep of separators) {
+  let parts = [protectedText];
+  for (const sep of strongSeps) {
     parts = parts.flatMap(p => p.split(sep));
   }
 
+  // -------------------------
+  // 4) Aplicar smart "y" por cada chunk y limpiar
+  // -------------------------
+  const ignore = new Set(['y', 'tambien', 'hay', 'una', 'un', 'otra', 'cosa', 'ademas']);
+
   return parts
+    .flatMap(p => smartSplitByY(p))
     .map(p => p.trim())
     .filter(p => {
       const clean = p.toLowerCase().replace(/[.,]/g, '').trim();
-      const ignore = ['y', 'tambien', 'hay', 'una', 'un', 'otra', 'cosa', 'ademas'];
-      return clean.length > 4 && !ignore.includes(clean);
+      return clean.length > 4 && !ignore.has(clean);
     })
     .map(p => p.replace(/^[y,\s. ]+/i, '').trim());
 }
@@ -236,6 +413,21 @@ async function handleNeutralMode(ctx) {
       }
     }
 
+    // ✅ Si en multi quedó alberca genérica, pedir aclaración (detener y preguntar)
+    if (userSaidPoolGeneric(draft.descripcion_original) && isGenericPoolLugar(draft.lugar)) {
+      // Guardamos lo que ya tenemos y pedimos aclaración sobre ESTE ticket
+      s.draft = {
+        descripcion: draft.descripcion,
+        descripcion_original: draft.descripcion_original,
+        lugar: null,
+        area_destino: draft.area_destino || null,
+        areas: draft.area_destino ? [draft.area_destino] : [],
+      };
+      // limpiar cola multi para evitar mezclas raras; opcional: mantenerlos si tu flujo lo requiere
+      // s._multipleTickets = [];
+      return await askPoolDisambiguation(ctx);
+    }
+
     // segunda pasada para área si falta
     if (!draft.area_destino && detectArea) {
       try {
@@ -315,6 +507,12 @@ async function handleNewIncident(ctx) {
     }
   } else if (strongPlace && strongPlace.value) {
     s.draft.lugar = strongPlace.value;
+  }
+
+  // ✅ Si quedó alberca/piscina genérico, pedir aclaración y NO avanzar a preview/confirm
+  if (userSaidPoolGeneric(text) && isGenericPoolLugar(s.draft.lugar)) {
+    s.draft.lugar = null;
+    return await askPoolDisambiguation(ctx);
   }
 
   try {

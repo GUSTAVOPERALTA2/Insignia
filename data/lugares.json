@@ -1100,8 +1100,8 @@
     "type": "centro_consumo",
     "tower": "Principal",
     "aliases": [
-      "bar",
-      "otro bar"
+      "otro bar",
+      "the other bar"
     ]
   },
   {
@@ -3892,23 +3892,13 @@
     ]
   },
   {
-    "id": "alberca_family",
-    "label": "Alberca Familiar (Family Pool)",
-    "type": "zona",
-    "aliases": [
+    "id":"alberca_family",
+    "label":"Alberca Familiar",
+    "type":"zona",
+    "aliases":["alberca familiar",
       "family pool",
-      "alberca familiar",
-      "piscina familiar",
-      "alberca de familias",
       "family",
-      "pool familiar",
-      "alberca family",
-      "alberca",
-      "piscina",
-      "la alberca",
-      "en la alberca",
-      "pool"
-    ]
+      "kids pool (family)"]
   },
   {
     "id": "alberca_adults",
@@ -3928,12 +3918,26 @@
     "label": "Alberca Principal",
     "type": "zona",
     "aliases": [
-      "principal pool",
       "alberca principal",
       "piscina principal",
-      "principal pool"
+      "principal pool",
+      "main pool"
     ]
   },
+  {
+    "id": "alberca_any",
+    "label": "Alberca / Piscina (genérico)",
+    "type": "ambiguo",
+    "aliases": [
+      "alberca",
+      "piscina",
+      "pool",
+      "la alberca",
+      "la piscina",
+      "en la alberca",
+      "en la piscina"
+    ]
+  },  
   {
     "id": "zona_playa",
     "label": "Playa",

@@ -12,6 +12,9 @@ const { handleMultipleTickets } = require('./modeMultipleTickets');
 const { handleRecovery } = require('./modeRecovery');
 const { handleNeutral } = require('./modeNeutral');
 
+// ✅ NUEVO: handler dedicado para elegir lugar desde candidatos
+const { handleChoosePlaceFromCandidates } = require('./modeChoosePlaceFromCandidates');
+
 // Mapa de modos a handlers
 const modeHandlers = {
   // Confirmación
@@ -37,9 +40,13 @@ const modeHandlers = {
   // Selección de lugar
   'ask_place': handlePlaceSelection,
   'ask_place_conflict': handlePlaceSelection,
-  'choose_place_from_candidates': handlePlaceSelection,
-  'ask_area_multiple': handlePlaceSelection,      // NUEVO: área para múltiples tickets
-  'choose_area_single': handlePlaceSelection,     // NUEVO: área para ticket único
+
+  // ✅ AQUÍ: antes estaba handlePlaceSelection, ahora es tu handler dedicado
+  'choose_place_from_candidates': handleChoosePlaceFromCandidates,
+
+  // Esto sigue siendo parte del flujo “place selection”
+  'ask_area_multiple': handlePlaceSelection,
+  'choose_area_single': handlePlaceSelection,
 
   // Selección de área
   'choose_area_multi': handleAreaSelection,
@@ -51,17 +58,12 @@ const modeHandlers = {
   'confused_recovery': handleRecovery,
   'choose_incident_version': handleRecovery,
 
-  // Neutral (entrada/fallback)
+  // Neutral
   'neutral': handleNeutral,
 };
 
 const SUPPORTED_MODES = Object.keys(modeHandlers);
 
-/**
- * Obtiene el handler para un modo específico
- * @param {string} mode - Modo actual de la sesión
- * @returns {Function} Handler para el modo
- */
 function getHandler(mode) {
   return modeHandlers[mode] || modeHandlers['neutral'];
 }
