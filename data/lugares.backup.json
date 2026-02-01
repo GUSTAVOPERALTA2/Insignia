@@ -143,7 +143,7 @@
       "habitacion 1204"
     ]
   },
-  {
+    {
     "id": "hab_pri_a_1205",
     "label": "Habitación 1205",
     "type": "habitacion",
@@ -3892,15 +3892,13 @@
     ]
   },
   {
-    "id": "alberca_family",
-    "label": "Alberca Familiar",
-    "type": "zona",
-    "aliases": [
-      "alberca familiar",
+    "id":"alberca_family",
+    "label":"Alberca Familiar",
+    "type":"zona",
+    "aliases":["alberca familiar",
       "family pool",
       "family",
-      "kids pool (family)"
-    ]
+      "kids pool (family)"]
   },
   {
     "id": "alberca_adults",
@@ -3925,7 +3923,7 @@
       "principal pool",
       "main pool"
     ]
-  },
+  }, 
   {
     "id": "zona_playa",
     "label": "Playa",
@@ -3947,16 +3945,5 @@
       "fitness",
       "fitness center"
     ]
-  },
-  {
-    "label": "baños de hombres",
-    "type": "other",
-    "source": "freeform",
-    "added_at": "2026-01-17T21:01:38.326Z",
-    "aliases": [
-      "baños hombres",
-      "banos de hombres"
-    ],
-    "area": "MAN"
   }
 ]

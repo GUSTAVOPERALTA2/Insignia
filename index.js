@@ -8,8 +8,9 @@ const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 
 /* ──────────────────────────────────────────────────────────────
- * 0) HARD SINGLE-INSTANCE LOCK
+ * 0) HARD SINGLE-INSTANCE LOCK (DESHABILITADO - bug en Windows)
  * ────────────────────────────────────────────────────────────── */
+/*
 const LOCK_FILE = path.join(process.cwd(), '.vicebot.lock');
 
 function isPidAlive(pid) {
@@ -43,6 +44,7 @@ function acquireLockOrExit() {
   }
 }
 acquireLockOrExit();
+*/
 
 /* ──────────────────────────────────────────────────────────────
  * 1) Monkeypatch LocalAuth.logout (EBUSY Windows)
@@ -84,17 +86,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /* ──────────────────────────────────────────────────────────────
  * 2) Imports del bot
  * ────────────────────────────────────────────────────────────── */
-// ✅ NOTA: El dedupe (hasMessageBeenHandled/markMessageHandled) se maneja en coreMessageRouter
 const { handleIncomingMessage } = require('./modules/core/coreMessageRouter');
 
 console.log('[BOOT] adminCommandRouter resolved:', require.resolve('./modules/core/adminCommandRouter'));
 const { tryHandleAdminCommands } = require('./modules/core/adminCommandRouter');
 
-const { attachDashboardApi } = require('./modules/dashboard/api');
-const { attachCancelNotifyApi, handleDashboardCancelStatusChange } = require('./modules/dashboard/cancelNotify');
-const { handleDashboardDoneStatusChange } = require('./modules/dashboard/doneNotify');
-const { handleDashboardInProgressStatusChange } = require('./modules/dashboard/progressNotify');
-const { sendFollowUpToGroups } = require('./modules/groups/groupRouter');
+const { sendFollowUpToGroups, safeSendMessage, loadGroupsConfig, resolveTargetGroups } = require('./modules/groups/groupRouter');
+
+// Notificaciones al solicitante
+const { sendDM } = require('./modules/notify/requesterDM');
+
+// DB para obtener info de incidencias
+const incidenceDB = require('./modules/db/incidenceDB');
 
 /* ──────────────────────────────────────────────────────────────
  * 3) Config
@@ -115,6 +118,15 @@ const WA_WIPE_ON_LOGOUT = String(process.env.VICEBOT_WA_WIPE_ON_LOGOUT || '0') =
 const WA_RECONNECT_BASE_MS = parseInt(process.env.VICEBOT_WA_RECONNECT_BASE_MS || '1500', 10);
 const WA_RECONNECT_MAX_MS  = parseInt(process.env.VICEBOT_WA_RECONNECT_MAX_MS  || '20000', 10);
 
+// Health check config
+const WA_HEALTH_CHECK_INTERVAL = parseInt(process.env.VICEBOT_WA_HEALTH_CHECK_MS || '45000', 10);
+const WA_HEALTH_CHECK_TIMEOUT = parseInt(process.env.VICEBOT_WA_HEALTH_TIMEOUT_MS || '15000', 10);
+const WA_HEALTH_CHECK_FAILURES_BEFORE_RESTART = parseInt(process.env.VICEBOT_WA_HEALTH_FAILURES || '2', 10);
+
+// Dashboard notification config
+const DASHBOARD_WEBHOOK_URL = process.env.VICEBOT_DASHBOARD_WEBHOOK_URL || 'http://localhost:3031/api/webhook/notify';
+const DASHBOARD_WEBHOOK_TOKEN = process.env.VICEBOT_DASHBOARD_WEBHOOK_TOKEN || null;
+
 const SESSION_PATH = path.join(process.cwd(), '.wwebjs_auth');
 const CLIENT_ID = process.env.VICEBOT_WA_CLIENT_ID || 'vicebot-prod';
 
@@ -122,6 +134,36 @@ console.log('[BOOT] WA headless =', WA_HEADLESS ? 'true' : 'false');
 if (WA_DIAG) console.log('[BOOT] WA_DIAG enabled');
 if (WA_AUTORECONNECT) console.log('[BOOT] WA_AUTORECONNECT enabled');
 if (WA_WIPE_ON_LOGOUT) console.log('[BOOT] WA_WIPE_ON_LOGOUT enabled');
+console.log(`[BOOT] Health check: every ${WA_HEALTH_CHECK_INTERVAL}ms, timeout ${WA_HEALTH_CHECK_TIMEOUT}ms`);
+console.log(`[BOOT] Dashboard webhook: ${DASHBOARD_WEBHOOK_URL}`);
+
+/**
+ * Notifica al dashboard sobre cambios en incidencias
+ * No bloquea ni falla si el dashboard no está disponible
+ */
+async function notifyDashboard(payload) {
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (DASHBOARD_WEBHOOK_TOKEN) {
+      headers['Authorization'] = `Bearer ${DASHBOARD_WEBHOOK_TOKEN}`;
+    }
+    
+    const res = await fetch(DASHBOARD_WEBHOOK_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(3000) // 3s timeout
+    });
+    
+    if (DEBUG && res.ok) {
+      const data = await res.json().catch(() => ({}));
+      console.log(`[DASH-NOTIFY] OK (${data.clients || 0} clients):`, payload.type);
+    }
+  } catch (e) {
+    // Silencioso - el dashboard puede no estar corriendo
+    if (DEBUG) console.log('[DASH-NOTIFY] Skip:', e?.message || 'no response');
+  }
+}
 
 /* ──────────────────────────────────────────────────────────────
  * 4) Helpers: errores típicos / wipe con retries (Windows)
@@ -146,8 +188,6 @@ function isEbusyError(e) {
   );
 }
 
-// Wipe robusto: intenta rmSync; si EBUSY, espera y reintenta.
-// Importante: se llama DESPUÉS de client.destroy() + pequeña pausa.
 async function wipeLocalAuthSessionWithRetries() {
   const dir = SESSION_PATH;
   const max = 10;
@@ -199,7 +239,7 @@ function logListenerCounts(c) {
 let client = null;
 
 let shuttingDown = false;
-let restarting = false; // ✅ NUEVO: evita carreras durante LOGOUT/reinit
+let restarting = false;
 
 let WA_CONNECTED = false;
 let WA_READY = false;
@@ -208,11 +248,16 @@ let initInFlight = false;
 let restartTimer = null;
 let restartAttempt = 0;
 
+// Health check state
+let healthCheckInterval = null;
+let healthCheckFailures = 0;
+let lastSuccessfulPing = Date.now();
+
 async function safeReply(msg, text) {
   if (!msg) return false;
   if (shuttingDown || restarting || !WA_CONNECTED) return false;
   try {
-    await msg.reply(text);
+    await msg.reply(text, undefined, { sendSeen: false });
     return true;
   } catch (e) {
     if (isSessionClosedError(e)) {
@@ -220,6 +265,86 @@ async function safeReply(msg, text) {
       return false;
     }
     throw e;
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * 5.5) HEALTH CHECK ACTIVO
+ * ────────────────────────────────────────────────────────────── */
+async function performHealthCheck() {
+  if (shuttingDown || restarting || initInFlight) {
+    return;
+  }
+  
+  if (!client || !WA_READY) {
+    if (WA_DIAG) console.log('[HEALTH] Skip: client not ready');
+    return;
+  }
+  
+  try {
+    const statePromise = client.getState();
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Health check timeout')), WA_HEALTH_CHECK_TIMEOUT)
+    );
+    
+    const state = await Promise.race([statePromise, timeoutPromise]);
+    
+    if (state === 'CONNECTED') {
+      if (healthCheckFailures > 0) {
+        console.log(`[HEALTH] ✅ Connection restored after ${healthCheckFailures} failures`);
+      }
+      healthCheckFailures = 0;
+      lastSuccessfulPing = Date.now();
+      
+      if (WA_DIAG) {
+        console.log('[HEALTH] ✅ OK -', state);
+      }
+    } else {
+      console.warn(`[HEALTH] ⚠️ State is ${state}, not CONNECTED`);
+      handleHealthCheckFailure(`state_${state}`);
+    }
+  } catch (e) {
+    const msg = e?.message || String(e);
+    console.warn(`[HEALTH] ❌ Check failed: ${msg}`);
+    handleHealthCheckFailure(msg);
+  }
+}
+
+function handleHealthCheckFailure(reason) {
+  healthCheckFailures++;
+  
+  const timeSinceLastSuccess = Date.now() - lastSuccessfulPing;
+  
+  console.warn(`[HEALTH] Failure ${healthCheckFailures}/${WA_HEALTH_CHECK_FAILURES_BEFORE_RESTART}` +
+    ` (${Math.round(timeSinceLastSuccess / 1000)}s since last success)`);
+  
+  if (healthCheckFailures >= WA_HEALTH_CHECK_FAILURES_BEFORE_RESTART) {
+    console.error(`[HEALTH] ❌ ${healthCheckFailures} consecutive failures - triggering restart`);
+    
+    WA_CONNECTED = false;
+    WA_READY = false;
+    healthCheckFailures = 0;
+    
+    scheduleRestart(`health_check_failed: ${reason}`);
+  }
+}
+
+function startHealthCheck() {
+  stopHealthCheck();
+  
+  console.log(`[HEALTH] Starting health check (interval: ${WA_HEALTH_CHECK_INTERVAL}ms)`);
+  
+  healthCheckFailures = 0;
+  lastSuccessfulPing = Date.now();
+  
+  healthCheckInterval = setInterval(performHealthCheck, WA_HEALTH_CHECK_INTERVAL);
+  setTimeout(performHealthCheck, 5000);
+}
+
+function stopHealthCheck() {
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
+    healthCheckInterval = null;
   }
 }
 
@@ -245,15 +370,17 @@ function createWaClient() {
     authStrategy: auth,
     puppeteer: puppeteerCfg,
 
-    // ✅ reduce conflictos / “takeover” raros
     takeoverOnConflict: true,
     takeoverTimeoutMs: 5000,
-
-    // ✅ evita loops eternos de QR si algo falla
     qrMaxRetries: 5,
-    authTimeoutMs: 0, // 0 = sin timeout corto (en algunas redes tarda)
-  });
+    authTimeoutMs: 0,
 
+    webVersionCache: {
+      type: 'remote',
+      remotePath: process.env.VICEBOT_WA_WEB_CACHE_URL
+        || 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+    },
+  });
 
   const isFromMe = (m) => Boolean(m.fromMe);
   const isStatusBroadcast = (m) => m.from === 'status@broadcast';
@@ -295,8 +422,8 @@ function createWaClient() {
       console.warn('⚠️ [WARN] READY emitido de nuevo (reinit/reconnect interno).');
     }
 
-    // ✅ si llegó a READY, resetea backoff
     restartAttempt = 0;
+    startHealthCheck();
 
     if (WA_DIAG) {
       console.log('[WA][DIAG] ready at', new Date().toISOString());
@@ -304,13 +431,18 @@ function createWaClient() {
     }
   });
 
-  // logs opcionales
-  c.on('change_state', (state) => { if (WA_DIAG) console.log('🧭 [WA] change_state:', state); });
+  c.on('change_state', (state) => { 
+    if (WA_DIAG) console.log('🧭 [WA] change_state:', state); 
+    
+    if (state === 'CONNECTED') {
+      healthCheckFailures = 0;
+      lastSuccessfulPing = Date.now();
+    }
+  });
+  
   c.on('loading_screen', (pct, msg) => { if (WA_DIAG) console.log('⏳ [WA] loading_screen:', pct, msg); });
 
   c.on('disconnected', async (reason) => {
-    // 🔥 Esta parte es clave en tu bug:
-    // el LOGOUT dispara varias veces; sólo atendemos una vez.
     if (restarting || shuttingDown) {
       if (WA_DIAG) console.warn('[WA] disconnected ignored (restarting/shuttingDown). reason=', reason);
       return;
@@ -318,12 +450,11 @@ function createWaClient() {
 
     WA_CONNECTED = false;
     WA_READY = false;
+    stopHealthCheck();
 
     console.log('🔌 Disconnected:', reason);
 
     if (!WA_AUTORECONNECT) return;
-
-    // Para LOGOUT vamos a reiniciar "duro"
     scheduleRestart(String(reason || 'unknown'));
   });
 
@@ -334,9 +465,6 @@ function createWaClient() {
       return;
     }
     if (isFromMe(msg) || isStatusBroadcast(msg)) return;
-
-    // ✅ NOTA: El dedupe de mensajes se maneja en coreMessageRouter
-    // NO marcar aquí para evitar doble marcado
 
     const body = (msg.body || '').trim();
     if (DEBUG) console.log('[MSG] in', { chatId: msg.from, body: body || '(vacío / media)' });
@@ -373,6 +501,7 @@ function createWaClient() {
 async function initWhatsApp() {
   if (initInFlight) return;
   initInFlight = true;
+  stopHealthCheck();
 
   try {
     if (client) {
@@ -393,8 +522,8 @@ async function initWhatsApp() {
 
 function scheduleRestart(reason) {
   if (shuttingDown) return;
-  if (restartTimer) return;          // ya hay uno programado
-  if (restarting) return;            // ya estamos reiniciando
+  if (restartTimer) return;
+  if (restarting) return;
 
   restartAttempt += 1;
   const wait = computeBackoffMs(restartAttempt);
@@ -406,10 +535,10 @@ function scheduleRestart(reason) {
 
     if (shuttingDown) return;
 
-    // ✅ REINICIO “DURO” EN ORDEN: destroy -> pausa -> wipe (si aplica) -> init
     restarting = true;
     WA_CONNECTED = false;
     WA_READY = false;
+    stopHealthCheck();
 
     const upperReason = String(reason || '').toUpperCase();
 
@@ -423,13 +552,10 @@ function scheduleRestart(reason) {
     }
 
     client = null;
-
-    // Pausa para que Chromium suelte handles
     await sleep(700);
 
     if (upperReason.includes('LOGOUT') && WA_WIPE_ON_LOGOUT) {
       await wipeLocalAuthSessionWithRetries();
-      // otra pausa breve
       await sleep(400);
     }
 
@@ -439,54 +565,271 @@ function scheduleRestart(reason) {
 }
 
 /* ──────────────────────────────────────────────────────────────
- * 8) HTTP/Dashboard
+ * 8) HTTP Server (mínimo, sin dashboard)
  * ────────────────────────────────────────────────────────────── */
 const app = express();
 app.use(express.json());
 
-attachDashboardApi(app, {
-  basePath: '/api',
-  onStatusChange: async ({ incidentId, newStatus, by, reason, note }) => {
-    try {
-      if (newStatus === 'canceled') {
-        await handleDashboardCancelStatusChange({ client, incidentId, reason, by, sendFollowUpToGroups });
-      } else if (newStatus === 'done') {
-        await handleDashboardDoneStatusChange({ client, incidentId, by, note, sendFollowUpToGroups });
-      } else if (newStatus === 'in_progress') {
-        await handleDashboardInProgressStatusChange({ client, incidentId, by, note, sendFollowUpToGroups });
-      }
-    } catch (e) {
-      console.warn('[HOOK] onStatusChange error:', e?.message || e);
-    }
-  },
-});
-
-attachCancelNotifyApi(app, { client, sendFollowUpToGroups });
-
+// Servir attachments
 const ATTACH_ROOT = process.env.VICEBOT_ATTACH_ROOT || path.join(process.cwd(), 'data', 'attachments');
 fs.mkdirSync(ATTACH_ROOT, { recursive: true });
 app.use('/attachments', express.static(ATTACH_ROOT));
 
-const PUBLIC_DIR = path.join(process.cwd(), 'public');
-app.use(
-  express.static(PUBLIC_DIR, {
-    etag: false,
-    lastModified: false,
-    maxAge: 0,
-    setHeaders: (res) => res.set('Cache-control', 'no-store'),
-  })
-);
-
-app.get('/dashboard', (_req, res) => {
-  const modern = path.join(PUBLIC_DIR, 'dashboard', 'index.html');
-  const legacy = path.join(PUBLIC_DIR, 'dashboard.html');
-  res.sendFile(fs.existsSync(modern) ? modern : legacy);
-});
-
+// Health check básico
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+// Estado de WhatsApp
+app.get('/api/wa-status', (_req, res) => {
+  res.json({
+    connected: WA_CONNECTED,
+    ready: WA_READY,
+    restarting,
+    healthCheck: {
+      failures: healthCheckFailures,
+      lastSuccessfulPing: lastSuccessfulPing,
+      timeSinceLastSuccess: Date.now() - lastSuccessfulPing,
+    },
+    restartAttempt,
+  });
+});
+
+// Endpoint interno para que módulos notifiquen cambios al dashboard
+// Uso: POST /api/internal/notify-dashboard { type, incidentId, folio, status, ... }
+app.post('/api/internal/notify-dashboard', (req, res) => {
+  const payload = req.body || {};
+  if (!payload.type) {
+    return res.status(400).json({ error: 'missing_type' });
+  }
+  
+  // Notificar de forma asíncrona
+  notifyDashboard(payload);
+  
+  res.json({ ok: true, queued: true });
+});
+
+/* ──────────────────────────────────────────────────────────────
+ * WEBHOOK: Recibir cambios de estado desde el Dashboard
+ * Envía notificaciones por WhatsApp a grupos y solicitante
+ * ────────────────────────────────────────────────────────────── */
+app.post('/api/webhook/status-change', async (req, res) => {
+  const { incidentId, folio, from, to, source } = req.body || {};
+  
+  if (!incidentId || !to) {
+    return res.status(400).json({ error: 'missing_fields', required: ['incidentId', 'to'] });
+  }
+  
+  // Solo procesar si viene del dashboard
+  if (source !== 'dashboard') {
+    return res.json({ ok: true, skipped: true, reason: 'not_from_dashboard' });
+  }
+  
+  console.log(`[WEBHOOK] Status change from dashboard: ${folio || incidentId} ${from} → ${to}`);
+  
+  // Verificar que WhatsApp está conectado
+  if (!WA_CONNECTED || !WA_READY || !client) {
+    console.warn('[WEBHOOK] WhatsApp not connected, skipping notifications');
+    return res.json({ ok: false, error: 'whatsapp_not_connected' });
+  }
+  
+  try {
+    // Obtener info completa del incidente
+    const incident = await incidenceDB.getIncidentById(incidentId);
+    if (!incident) {
+      return res.status(404).json({ error: 'incident_not_found' });
+    }
+    
+    const results = { groups: null, requester: null };
+    const incFolio = incident.folio || folio || `INC-${incidentId.slice(0, 6)}`;
+    
+    // ─────────────────────────────────────────────────────────────
+    // 1. Notificar a los GRUPOS según el cambio de estado
+    // ─────────────────────────────────────────────────────────────
+    const cfg = await loadGroupsConfig();
+    const areasJson = (() => {
+      try { return JSON.parse(incident.areas_json || '[]'); } catch { return []; }
+    })();
+    
+    const { primaryId, ccIds } = resolveTargetGroups(
+      { area_destino: incident.area_destino, areas: areasJson },
+      cfg
+    );
+    
+    // Mapeo de estados a mensajes para grupos
+    const groupMessages = {
+      'in_progress': `🔧 *${incFolio}* — El ticket fue tomado desde el panel de control.`,
+      'done': `✅ *${incFolio}* — Completado.`,
+      'canceled': `❌ *${incFolio}* — Ticket cancelado desde el panel de control.`,
+      'open': `🔄 *${incFolio}* — Ticket reabierto desde el panel de control.`,
+    };
+    
+    const groupMsg = groupMessages[to];
+    
+    if (groupMsg && primaryId) {
+      const allGroups = [primaryId, ...(ccIds || [])];
+      const sent = [];
+      const errors = [];
+      
+      for (const gid of allGroups) {
+        try {
+          const r = await safeSendMessage(client, gid, groupMsg);
+          if (r.ok) sent.push(gid);
+          else errors.push({ gid, error: r.error });
+        } catch (e) {
+          errors.push({ gid, error: e?.message });
+        }
+      }
+      
+      results.groups = { sent: sent.length, errors: errors.length, details: errors };
+      if (DEBUG) console.log(`[WEBHOOK] Groups notified: ${sent.length} ok, ${errors.length} errors`);
+    }
+    
+    // ─────────────────────────────────────────────────────────────
+    // 2. Notificar al SOLICITANTE según el cambio de estado
+    // ─────────────────────────────────────────────────────────────
+    const dmKindMap = {
+      'in_progress': 'ack_start',
+      'done': 'done',
+      'open': 'reopened',
+    };
+    
+    const dmKind = dmKindMap[to];
+    
+    if (dmKind) {
+      const dmResult = await sendDM({
+        client,
+        incident,
+        kind: dmKind,
+        data: { area: incident.area_destino }
+      });
+      
+      results.requester = dmResult;
+      if (DEBUG) console.log(`[WEBHOOK] Requester DM (${dmKind}):`, dmResult.ok ? 'sent' : dmResult.reason);
+    }
+    
+    res.json({ 
+      ok: true, 
+      incidentId, 
+      folio: incFolio,
+      from, 
+      to,
+      notifications: results 
+    });
+    
+  } catch (e) {
+    console.error('[WEBHOOK] Error processing status change:', e);
+    res.status(500).json({ error: 'internal_error', message: e?.message });
+  }
+});
+
+/* ──────────────────────────────────────────────────────────────
+ * WEBHOOK: Recibir comentarios desde el Dashboard
+ * Guarda el comentario en la BD y lo envía por WhatsApp
+ * ────────────────────────────────────────────────────────────── */
+app.post('/api/webhook/comment', async (req, res) => {
+  const { incidentId, folio, chat_id, area_destino, text, source } = req.body || {};
+  
+  if (!incidentId || !text) {
+    return res.status(400).json({ error: 'missing_fields', required: ['incidentId', 'text'] });
+  }
+  
+  // Solo procesar si viene del dashboard
+  if (source !== 'dashboard') {
+    return res.json({ ok: true, skipped: true, reason: 'not_from_dashboard' });
+  }
+  
+  console.log(`[WEBHOOK] Comment from dashboard: ${folio || incidentId}`);
+  
+  try {
+    const results = { groups: null, requester: null, saved: false };
+    const incFolio = folio || `INC-${incidentId.slice(0, 6)}`;
+
+    // ✅ FIX: definir commentMsg (antes se usaba sin existir)
+    const commentMsg = `💬 *${incFolio}* — Comentario desde panel:\n\n${text}`;
+    
+    // ─────────────────────────────────────────────────────────────
+    // 1. GUARDAR el comentario en la BD (como EVENTO estándar)
+    // ─────────────────────────────────────────────────────────────
+    try {
+      // appendIncidentEvent NO es async en tu DB; no hace falta await
+      incidenceDB.appendIncidentEvent(incidentId, {
+        event_type: 'comment_text',
+        wa_msg_id: null,
+        payload: {
+          text,
+          by: 'dashboard',
+          source: 'dashboard'
+        }
+      });
+
+      results.saved = true;
+      if (DEBUG) console.log(`[WEBHOOK] Comment saved to DB for ${incFolio}`);
+    } catch (dbErr) {
+      console.error(`[WEBHOOK] Failed to save comment to DB:`, dbErr?.message || dbErr);
+      // Continuamos para intentar enviar por WhatsApp aunque falle el guardado
+    }
+
+    // ✅ (opcional, pero conservador): si WA no está listo, no intentes enviar
+    if (!WA_CONNECTED || !WA_READY || !client) {
+      console.warn('[WEBHOOK] WhatsApp not connected, comment saved but not sent');
+      return res.json({ 
+        ok: true, 
+        incidentId, 
+        folio: incFolio,
+        notifications: results,
+        warning: 'whatsapp_not_connected'
+      });
+    }
+    
+    // ─────────────────────────────────────────────────────────────
+    // 2. Enviar al GRUPO correspondiente
+    // ─────────────────────────────────────────────────────────────
+    const cfg = await loadGroupsConfig();
+    const { primaryId } = resolveTargetGroups({ area_destino: area_destino, areas: [] }, cfg);
+    
+    if (primaryId) {
+      try {
+        const r = await safeSendMessage(client, primaryId, commentMsg);
+        results.groups = { ok: r.ok, error: r.error || null };
+        if (DEBUG) console.log(`[WEBHOOK] Comment to group: ${r.ok ? 'sent' : r.error}`);
+      } catch (e) {
+        results.groups = { ok: false, error: e?.message };
+      }
+    }
+    
+    // ─────────────────────────────────────────────────────────────
+    // 3. Enviar al SOLICITANTE
+    // ─────────────────────────────────────────────────────────────
+    if (chat_id) {
+      try {
+        const r = await safeSendMessage(client, chat_id, commentMsg);
+        results.requester = { ok: r.ok, error: r.error || null };
+        if (DEBUG) console.log(`[WEBHOOK] Comment to requester: ${r.ok ? 'sent' : r.error}`);
+      } catch (e) {
+        results.requester = { ok: false, error: e?.message };
+      }
+    }
+    
+    res.json({ 
+      ok: true, 
+      incidentId, 
+      folio: incFolio,
+      notifications: results 
+    });
+    
+  } catch (e) {
+    console.error('[WEBHOOK] Error processing comment:', e);
+    res.status(500).json({ error: 'internal_error', message: e?.message });
+  }
+});
+
+// Exportar función para uso directo desde módulos
+// Los módulos pueden hacer: require('../index').notifyDashboard({...})
+// O usar el endpoint HTTP interno
+module.exports = { notifyDashboard };
+
 const httpServer = app.listen(HTTP_PORT, () => {
-  console.log(`[HTTP] Dashboard on http://localhost:${HTTP_PORT}/dashboard`);
+  console.log(`[HTTP] API on http://localhost:${HTTP_PORT}`);
+  console.log(`[HTTP] WA Status: http://localhost:${HTTP_PORT}/api/wa-status`);
 });
 
 /* ──────────────────────────────────────────────────────────────
@@ -506,6 +849,7 @@ async function gracefulExit(code = 0) {
 
   WA_CONNECTED = false;
   WA_READY = false;
+  stopHealthCheck();
 
   console.log('🧹 Cerrando…');
 
@@ -521,14 +865,12 @@ async function gracefulExit(code = 0) {
     }
   } catch {}
 
-  try { fs.unlinkSync(LOCK_FILE); } catch {}
   setTimeout(() => process.exit(code), 400);
 }
 
 process.on('SIGINT', () => gracefulExit(0));
 process.on('SIGTERM', () => gracefulExit(0));
 
-// ✅ CLAVE: durante reinicio, estas “Session closed” NO deben tumbarte
 process.on('unhandledRejection', (e) => {
   const msg = String(e?.message || e || '');
   if (restarting && isSessionClosedError(e)) {
@@ -547,7 +889,6 @@ process.on('uncaughtException', (e) => {
   const msg = String(e?.message || e || '');
   console.error('[FATAL] uncaughtException:', msg);
 
-  // mismo criterio: si estamos reiniciando y es "session closed", no mates todo
   if (restarting && msg.includes('Session closed')) {
     if (WA_DIAG) console.warn('[uncaughtException] ignored during restart:', msg);
     return;

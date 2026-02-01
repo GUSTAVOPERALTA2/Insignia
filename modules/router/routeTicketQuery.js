@@ -272,7 +272,7 @@ function formatTicketCount(count, label) {
 
 let safeReply = null;
 try {
-  ({ safeReply } = require('../utils/safeReply'));
+  ({ safeReply } = require('../core/safeReply'));
 } catch {}
 
 async function replySafe(msg, text) {

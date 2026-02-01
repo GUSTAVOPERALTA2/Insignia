@@ -239,11 +239,22 @@ function displayUser(users, chatIdOrUserId, fallbackName) {
 // ──────────────────────────────────────────────────────────────
 // Base de datos
 // ──────────────────────────────────────────────────────────────
-
 function openSqlite() {
   const sqlite = require('better-sqlite3');
-  const db = sqlite(DB_PATH);
+  
+  // Usar la ruta de la variable de entorno (seteada por el dashboard)
+  const dbPath = process.env.VICEBOT_DB_PATH || DB_PATH;
+  
+  console.log('[exportXLSX] Opening DB at:', dbPath);
+  console.log('[exportXLSX] File exists:', require('fs').existsSync(dbPath));
+  
+  const db = sqlite(dbPath);
   db.pragma('journal_mode = WAL');
+  
+  // Verificar tablas
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
+  console.log('[exportXLSX] Tables in DB:', tables.map(t => t.name).join(', '));
+  
   return db;
 }
 
@@ -427,13 +438,25 @@ function applyStatusColor(cell, statusRaw) {
  * @param {string[]} filters.statuses - Estados ['open','in_progress','done','canceled']
  * @returns {Promise<string>} Ruta del archivo generado
  */
-async function exportXLSX(filters = {}) {
+async function exportXLSX(filters = {}, externalDb = null) {
   const { startDate, endDate, areas, statuses } = filters;
+
+  // ═══════════════════════════════════════════════════════════════
+  // 🔥 LOG: Filtros recibidos
+  // ═══════════════════════════════════════════════════════════════
+  console.log('[exportXLSX] ═══════════════════════════════════════');
+  console.log('[exportXLSX] Filtros recibidos:', JSON.stringify(filters, null, 2));
+  console.log('[exportXLSX] startDate:', startDate);
+  console.log('[exportXLSX] endDate:', endDate);
+  console.log('[exportXLSX] areas:', areas, '(type:', typeof areas, ', isArray:', Array.isArray(areas), ')');
+  console.log('[exportXLSX] statuses:', statuses, '(type:', typeof statuses, ', isArray:', Array.isArray(statuses), ')');
+  console.log('[exportXLSX] ═══════════════════════════════════════');
 
   await fsp.mkdir(REPORTS_DIR, { recursive: true });
 
   const users = await loadUsers();
-  const db = openSqlite();
+  const db = externalDb || openSqlite();
+  const shouldCloseDb = !externalDb;
 
   // ═══════════════════════════════════════════════════════════════
   // Construir query con filtros
@@ -464,6 +487,15 @@ async function exportXLSX(filters = {}) {
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 
   // ═══════════════════════════════════════════════════════════════
+  // 🔥 LOG: Query construida
+  // ═══════════════════════════════════════════════════════════════
+  console.log('[exportXLSX] ───────────────────────────────────────');
+  console.log('[exportXLSX] WHERE clauses:', clauses);
+  console.log('[exportXLSX] WHERE string:', where);
+  console.log('[exportXLSX] Params:', JSON.stringify(params, null, 2));
+  console.log('[exportXLSX] ───────────────────────────────────────');
+
+  // ═══════════════════════════════════════════════════════════════
   // Obtener incidencias
   // ═══════════════════════════════════════════════════════════════
   
@@ -485,6 +517,23 @@ async function exportXLSX(filters = {}) {
     ${where}
     ORDER BY i.created_at DESC
   `).all(params);
+
+  // ═══════════════════════════════════════════════════════════════
+  // 🔥 LOG: Resultados
+  // ═══════════════════════════════════════════════════════════════
+  console.log('[exportXLSX] ───────────────────────────────────────');
+  console.log('[exportXLSX] Incidencias encontradas:', incidents.length);
+  if (incidents.length > 0) {
+    console.log('[exportXLSX] Primera incidencia:', {
+      folio: incidents[0].folio,
+      status: incidents[0].status,
+      area: incidents[0].area_destino,
+      created_at: incidents[0].created_at
+    });
+    console.log('[exportXLSX] Estados en resultados:', [...new Set(incidents.map(i => i.status))].join(', '));
+    console.log('[exportXLSX] Áreas en resultados:', [...new Set(incidents.map(i => i.area_destino))].join(', '));
+  }
+  console.log('[exportXLSX] ───────────────────────────────────────');
 
   if (!incidents.length) {
     db.close();
@@ -908,11 +957,45 @@ async function exportXLSX(filters = {}) {
   // Guardar archivo
   // ═══════════════════════════════════════════════════════════════
   
-  const ts = new Date().toISOString().replace(/[:.]/g, '').replace('T', '_').slice(0, 15);
-  let filename = `incidencias_${ts}`;
-  if (areas?.length) filename += `_${areas.join('-')}`;
-  if (startDate && endDate) filename += `_${startDate.replace(/-/g, '')}-${endDate.replace(/-/g, '')}`;
-  if (statuses?.length) filename += `_${statuses.join('-')}`;
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, ''); // YYYYMMDD
+  const timeStr = now.toTimeString().slice(0, 5).replace(':', ''); // HHMM
+
+  let filename = `incidencias_${dateStr}_${timeStr}`;
+
+  // Solo agregar filtros si NO son todos
+  const todasAreas = ['man', 'it', 'ama', 'rs', 'seg', 'exp'];
+  const todosEstados = ['open', 'in_progress', 'done', 'canceled'];
+
+  // Áreas
+  if (areas?.length && areas.length < todasAreas.length) {
+    const areasShort = areas.slice(0, 3).join('-');
+    filename += `_${areasShort}${areas.length > 3 ? '+' : ''}`;
+  }
+
+  // Periodo
+  if (startDate && endDate) {
+    const start = startDate.slice(5).replace('-', ''); // MMDD
+    const end = endDate.slice(5).replace('-', '');     // MMDD
+    filename += `_${start}-${end}`;
+  } else if (startDate) {
+    filename += `_desde${startDate.slice(5).replace('-', '')}`;
+  } else if (endDate) {
+    filename += `_hasta${endDate.slice(5).replace('-', '')}`;
+  }
+
+  // Estados (solo si no son todos)
+  if (statuses?.length && statuses.length < todosEstados.length) {
+    const statusesShort = statuses.map(s => {
+      if (s === 'open') return 'abierto';
+      if (s === 'in_progress') return 'proceso';
+      if (s === 'done') return 'hecho';
+      if (s === 'canceled') return 'cancelado';
+      return s;
+    }).slice(0, 2).join('-');
+    filename += `_${statusesShort}${statuses.length > 2 ? '+' : ''}`;
+  }
+
   filename += `.xlsx`;
 
   const outPath = path.join(REPORTS_DIR, filename);
@@ -923,7 +1006,9 @@ async function exportXLSX(filters = {}) {
   if (DEBUG) {
     console.log('[EXPORT] Reporte generado:', outPath);
   }
-
+  if (shouldCloseDb && db) {
+    db.close();
+  }
   return outPath;
 }
 

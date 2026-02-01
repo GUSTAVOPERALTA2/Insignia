@@ -118,14 +118,13 @@ function areaListLabel(arr) {
 
 function normalizeAreaCode(text) {
   if (!text) return null;
-  // usar toKey para normalizar entrada
   const tKey = toKey(text);
   if (!tKey) return null;
 
   // chequeo directo en mapa normalizado
   if (NORMALIZED_AREA_ALIASES[tKey]) return NORMALIZED_AREA_ALIASES[tKey];
 
-  // coincidencia por inclusión (ej: "ayb" vs "a y b" o "ama" vs "ama?")
+  // coincidencia por inclusión
   for (const k of Object.keys(NORMALIZED_AREA_ALIASES)) {
     if (k.includes(tKey) || tKey.includes(k)) return NORMALIZED_AREA_ALIASES[k];
   }
@@ -165,6 +164,7 @@ function formatPreview(draft, { showMissing = false } = {}) {
   const areaText = draft.area_destino ? areaLabel(draft.area_destino) : (showMissing ? '❓ _Sin detectar_' : '—');
   const descripcion = draft.descripcion || draft.descripcion_original || draft.incidente || '—';
 
+  // ✅ FIX: Removido el duplicado de "Área destino"
   return [
     '📝 *Vista previa del ticket*\n',
     `• *Descripción:* ${descripcion}`,
@@ -186,8 +186,8 @@ function formatPreviewMessage(draft) {
   } else if (missingArea) {
     return preview + '\n\n🏷️ No detecté el área. Dime: IT, Mantenimiento, HSKP, RS o Seguridad.';
   } else {
-    // Retornamos solo la vista previa sin ninguna instrucción de envío/confirmación
-    return preview;
+    // ✅ FIX: Agregar instrucción de confirmación cuando está completo
+    return preview + '\n\n_Responde *sí* para enviar o *no* para cancelar._';
   }
 }
 
@@ -220,13 +220,11 @@ function isVagueText(text) {
   if (trimmed.length < 3) return true;
   const t = norm(trimmed);
 
-  // Si es una sola palabra muy corta o saludo, consideramos vago
   if (t.split(/\s+/).length === 1 && t.length <= 4) return true;
 
   const vaguePatterns = [
     /^(hola|hey|buenas?|que tal)$/i,
     /^(ayuda|help)$/i,
-    // dejamos fuera 'si/no/ok' porque se detectan con isYes/isNo
   ];
   return vaguePatterns.some(rx => rx.test(t));
 }
@@ -252,13 +250,90 @@ function classifyConfirmMessage(text, draft = {}) {
   if (isYes(raw)) return 'confirm';
   if (isNo(raw)) return 'cancel';
 
-  // Followup patterns: "también...", "además...", "y aparte..."
+  // Followup patterns: "también...", "además..."
   const followupPatterns = [
-    /^(tambi[eé]n|adem[aá]s|y\s+tambi[eé]n|aparte|y\s+aparte|otro\s+detalle|tambi[eé]n\s+hay)/i,
+    /^(tambi[eé]n|adem[aá]s|y\s+tambi[eé]n|aparte|y\s+aparte|otro\s+detalle|tambi[eé]n\s+hay)\b/i,
     /^(ah,?\s+)?(y\s+)?tambi[eé]n\b/i,
     /^(otra\s+cosa|y\s+otra\s+cosa)\b/i,
   ];
 
+  // ──────────────────────────────────────────────────────────────
+  // Helpers: detectar "hint" de lugar y comparar con draft.lugar
+  // ──────────────────────────────────────────────────────────────
+  const extractPlaceHint = (s = '') => {
+    const r = String(s || '');
+
+    // 1) "hab 3101" / "habitación 3101" / "room 3101" / "cuarto 3101"
+    let m = r.match(/\b(?:hab(?:itaci[oó]n)?|room|cuarto|villa)\s*#?(\d{3,4})\b/i);
+    if (m?.[1]) return { kind: 'room', value: m[1] };
+
+    // 2) "de 3101" / "en 3101" / "para 3101" (4 dígitos)
+    m = r.match(/\b(?:de|en|para)\s*(\d{4})\b/i);
+    if (m?.[1]) return { kind: 'room', value: m[1] };
+
+    // 3) 4 dígitos sueltos (solo si el texto tiene señales de lugar)
+    if (/\b(en|de|para|hab|habitacion|room|cuarto|villa)\b/i.test(r)) {
+      m = r.match(/\b(\d{4})\b/);
+      if (m?.[1]) return { kind: 'room', value: m[1] };
+    }
+
+    // 4) Lugar textual corto tipo "spa", "lobby", etc.
+    m = r.match(/\b(?:en|lugar[:\s]*)\s*([a-zA-Z0-9áéíóúüñ\s]{3,40})\b/i);
+    if (m?.[1]) return { kind: 'text', value: m[1].trim() };
+
+    return null;
+  };
+
+  const placeDiffersFromDraft = (draftLugar = '', hint) => {
+    if (!draftLugar || !hint?.value) return false;
+
+    const d = String(draftLugar);
+
+    // Si hint es room:
+    if (hint.kind === 'room') {
+      const dRoom = d.match(/\b(\d{3,4})\b/);
+      const draftNum = dRoom?.[1] || null;
+
+      // draft no es cuarto (ej: "Spa") y hint sí trae número -> distinto FUERTE
+      if (!draftNum) return true;
+
+      return String(draftNum) !== String(hint.value);
+    }
+
+    // hint textual
+    const a = norm(draftLugar);
+    const b = norm(hint.value);
+    if (!a || !b) return false;
+    return !a.includes(b) && !b.includes(a);
+  };
+
+  // ──────────────────────────────────────────────────────────────
+  // Detectar si el texto parece un problema / solicitud
+  // ──────────────────────────────────────────────────────────────
+  const problemWords =
+    /\b(no\s+(funciona|sirve|enciende|prende|tiene)|roto|rota|dañado|dañada|averiado|falla|fuga|gotea|tapad|atorad|sin\s+(agua|luz|internet|wifi)|oscuro|apagado|apagada)\b/i;
+
+  const requestWords =
+    /\b(traer|traigan|llevar|cambiar|revisar|arreglar|reparar|limpiar|prender|encender|activar|necesito|ocupo|ayuda|ayudan|apoyan|urge|favor)\b/i;
+
+  const deviceWords =
+    /\b(tv|television|internet|wifi|aire|clima|luz|foco|agua|regadera|wc|inodoro|puerta|cerradura|control|chromecast|jacuzzi|plunge\s*pool|plush\s*pool|pool)\b/i;
+
+  const looksLikeProblem =
+    problemWords.test(raw) ||
+    (deviceWords.test(raw) && requestWords.test(raw)) ||
+    (len >= 18 && requestWords.test(raw));
+
+  // Regla fuerte: si hay draft y el texto trae un lugar distinto + parece problema => nuevo ticket
+  const hint = extractPlaceHint(raw);
+  const hasDraftPlace = !!draft?.lugar;
+  const hasDifferentPlace = hasDraftPlace && hint && placeDiffersFromDraft(draft.lugar, hint);
+
+  if (looksLikeProblem && hasDifferentPlace) {
+    return 'new_incident_candidate';
+  }
+
+  // Si es followup y NO disparó new_incident_candidate, es detalle
   if (followupPatterns.some(rx => rx.test(t))) {
     return 'detail_followup';
   }
@@ -273,24 +348,13 @@ function classifyConfirmMessage(text, draft = {}) {
     /^(cambia|cambiar|reemplaza|reemplazar)\s+(la\s+)?descripcion/i,
     /^(actualiza|actualizar)\s+(la\s+)?descripcion/i,
   ];
+  if (editCommands.some(rx => rx.test(t))) return 'edit_command';
 
-  if (editCommands.some(rx => rx.test(t))) {
-    return 'edit_command';
-  }
+  // Fallback: si parece problema y tiene lugar (número o "en X")
+  const hasPlaceFallback =
+    /\b(en|lugar|hab|habitacion|room|cuarto|villa)\b/i.test(raw) && /\b\d{3,4}\b/.test(raw);
 
-  // Detectar si parece nuevo incidente con lugar diferente
-  const problemWords = /\b(no\s+(funciona|sirve|enciende|prende|tiene)|roto|rota|dañado|dañada|averiado|falla|fuga|gotea|necesita|requiere|falta|sucio|sucia|apagado|apagada)\b/i;
-  const requestWords = /\b(traer|traigan|llevar|cambiar|revisar|arreglar|reparar|limpiar|necesito|ocupo|ayuda|ayudan|necesitamos)\b/i;
-  const deviceWords = /\b(tv|television|impresora|internet|wifi|aire|clima|luz|foco|agua|regadera|control|puerta|cerradura)\b/i;
-
-  const looksLikeProblem = problemWords.test(raw) ||
-    (deviceWords.test(raw) && requestWords.test(raw)) ||
-    (len > 25 && requestWords.test(raw));
-
-  // detectar número de habitación con mayor control (3-4 dígitos)
-  const hasPlace = /\b(en|lugar|hab)\b.*\b\d{3,4}\b/i.test(raw) || /\b\d{3,4}\b/.test(raw);
-
-  if (looksLikeProblem && hasPlace && len > 20) {
+  if (looksLikeProblem && hasPlaceFallback && len > 20) {
     return 'new_incident_candidate';
   }
 
@@ -303,10 +367,7 @@ function classifyConfirmMessage(text, draft = {}) {
     /^el\s+lugar\s+es\s+/i,
     /^lugar[:\s]+/i,
   ];
-
-  if (len < 40 && placeChangePatterns.some(rx => rx.test(t))) {
-    return 'place_change';
-  }
+  if (len < 40 && placeChangePatterns.some(rx => rx.test(t))) return 'place_change';
 
   // Cambio de área
   const areaChangePatterns = [
@@ -314,20 +375,13 @@ function classifyConfirmMessage(text, draft = {}) {
     /^(cambia|cambiar?)\s+(el\s+)?[aá]rea\s+(a|para)\s+/i,
     /^[aá]rea[:\s]+/i,
   ];
-
-  if (len < 30 && areaChangePatterns.some(rx => rx.test(t))) {
-    return 'area_change';
-  }
+  if (len < 30 && areaChangePatterns.some(rx => rx.test(t))) return 'area_change';
 
   // Número de habitación suelto
-  if (/^\d{3,4}$/.test(t)) {
-    return 'room_number';
-  }
+  if (/^\d{3,4}$/.test(t)) return 'room_number';
 
-  // Mensaje largo = posible descripción adicional o nuevo problema
-  if (len > 50) {
-    return 'long_message';
-  }
+  // Mensaje largo -> edición IA
+  if (len > 50) return 'long_message';
 
   return 'unknown';
 }
@@ -407,7 +461,6 @@ function inActiveMediaBatch(s, now = Date.now()) {
   return !!(b && b.lastTs && (now - b.lastTs) <= MEDIA_BATCH_WINDOW_MS);
 }
 
-// Helper para limpiar campos temporales de sesión relacionados con NI
 function cleanupSessionMedia(s = {}) {
   try {
     delete s._pendingMedia;
@@ -415,7 +468,6 @@ function cleanupSessionMedia(s = {}) {
     delete s._placeCandidates;
     delete s._multiAreaPending;
     delete s._lastAskPlaceTs;
-    // no borramos draft/other persistent state
     return true;
   } catch (err) {
     if (DEBUG) console.error('[shared.cleanupSessionMedia] error', err);
@@ -423,7 +475,6 @@ function cleanupSessionMedia(s = {}) {
   }
 }
 
-// Simple logger controlado por DEBUG
 function log(...args) {
   if (DEBUG) {
     console.log('[niHandlers/shared]', ...args);

@@ -5,10 +5,10 @@
  * - confirm_batch: confirmación de múltiples tickets
  * - confirm_new_ticket_decision: manejo de decisión para nuevo ticket con lugar diferente
  *
- * ✅ Cambios incluidos (anti doble-dispatch por áreas):
- * - Cuando cambia el área: SIEMPRE se reemplaza draft.areas = [AREA]
- * - Antes de enviar (confirm individual / batch): forzamos draft.areas = [area_destino]
- * - En edición IA (handleEditSingleTicket): normalizamos área y reemplazamos la lista
+ * ✅ Cambios incluidos:
+ * - Todos los handlers para classifyConfirmMessage implementados
+ * - Anti doble-dispatch por áreas
+ * - Manejo robusto de errores
  */
 
 const {
@@ -29,6 +29,23 @@ const { interpretEditMessage } = require('./interpretEditMessage');
 // Áreas permitidas
 const ALLOWED_AREAS = new Set(['RS', 'AMA', 'MAN', 'IT', 'SEG']);
 
+// ──────────────────────────────────────────────────────────────
+// Heurísticas
+// ──────────────────────────────────────────────────────────────
+function looksLikeIncidentText(text = '') {
+  const t = norm(text);
+  if (!t || t.length < 6) return false;
+
+  return /(no\s+(hay|tiene|sirve|funciona|prende|enciende|apoyan)|sin\s+(agua|luz|internet|wifi)|fuga|gotea|tapad|atorad|roto|dañad|fall(a|o)|agua\s+(fria|caliente)|wc|inodoro|regadera|clima|aire|tv|chromecast|internet|wifi|plunge|plush\s*pool|pool|jacuzzi)/i.test(t);
+}
+
+function isDifferentPlaceStrong(currentPlace = '', newPlaceValue = '') {
+  const a = norm(currentPlace);
+  const b = norm(newPlaceValue);
+  if (!a || !b) return false;
+  return !a.includes(b) && !b.includes(a);
+}
+
 /**
  * Helper defensivo: alinear areas[] con area_destino
  */
@@ -42,13 +59,289 @@ function syncAreasWithPrimary(s, draft) {
   d.area_destino = a;
   d.areas = [a];
 
-  // 👇 CLAVE: si tu sistema usa session areas, aquí lo blindas
   if (Array.isArray(s.areas)) s.areas = [a];
   if (Array.isArray(s._areas)) s._areas = [a];
 }
 
 /**
- * Handler IA para edición de UN SOLO ticket dentro de modo 'confirm'
+ * Extrae número de habitación de un texto
+ */
+function extractRoomNumber(text = '') {
+  const match = text.match(/\b(\d{3,4})\b/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Extrae lugar de patrones comunes
+ */
+function extractPlaceFromText(text = '') {
+  const patterns = [
+    /(?:en\s+(?:la\s+)?(?:hab(?:itaci[oó]n)?)?\s*)(\d{3,4})/i,
+    /(?:lugar[:\s]+)(.+)/i,
+    /(?:es\s+en\s+)(.+)/i,
+    /(?:cambia(?:r)?\s+(?:el\s+)?lugar\s+(?:a|para)\s+)(.+)/i,
+  ];
+
+  for (const rx of patterns) {
+    const m = text.match(rx);
+    if (m && m[1]) return m[1].trim();
+  }
+
+  const roomMatch = text.match(/^\d{3,4}$/);
+  if (roomMatch) return roomMatch[0];
+
+  return null;
+}
+
+/**
+ * Extrae área de patrones comunes
+ */
+function extractAreaFromText(text = '') {
+  const t = norm(text);
+  
+  const areaMap = {
+    'it': 'IT',
+    'sistemas': 'IT',
+    'mantenimiento': 'MAN',
+    'mantto': 'MAN',
+    'ama': 'AMA',
+    'hskp': 'AMA',
+    'housekeeping': 'AMA',
+    'seguridad': 'SEG',
+    'rs': 'RS',
+    'room service': 'RS',
+    'roomservice': 'RS',
+  };
+
+  for (const [key, value] of Object.entries(areaMap)) {
+    if (t.includes(key)) return value;
+  }
+
+  return null;
+}
+
+// ──────────────────────────────────────────────────────────────
+// HANDLERS INDIVIDUALES
+// ──────────────────────────────────────────────────────────────
+
+/**
+ * Handler para confirmación: enviar ticket
+ */
+async function handleConfirmYes(ctx) {
+  const { s, msg, replySafe, finalizeAndDispatch, client, resetSession, setMode } = ctx;
+
+  const draft = s?.draft;
+  if (!draft) {
+    setMode(s, 'neutral');
+    await replySafe(msg, '⚠️ No hay ticket activo para confirmar. Volviendo al menú.');
+    return true;
+  }
+
+  syncAreasWithPrimary(s, draft);
+
+  if (!hasRequiredDraft(draft)) {
+    const preview = formatPreviewMessage(draft);
+    await replySafe(msg, preview + '\n\n⚠️ Aún faltan datos. Indícame lo que falta para poder enviarlo.');
+    return true;
+  }
+
+  try {
+    const result = await finalizeAndDispatch({ client, msg, session: s });
+    if (result?.success) {
+      await replySafe(msg, `✅ Ticket enviado: *${result.folio || result.id || 'SIN_FOLIO'}*`);
+      try { resetSession(s.chatId); } catch {}
+      setMode(s, 'neutral');
+      return true;
+    }
+    await replySafe(msg, '❌ No pude enviar el ticket. Intenta de nuevo.');
+    return true;
+  } catch (e) {
+    if (DEBUG) console.warn('[CONFIRM] finalizeAndDispatch error', e?.message);
+    await replySafe(msg, '❌ Error al enviar el ticket. Intenta de nuevo.');
+    return true;
+  }
+}
+
+/**
+ * Handler para cancelación
+ */
+async function handleConfirmNo(ctx) {
+  const { s, msg, replySafe, resetSession, setMode } = ctx;
+
+  try { resetSession(s.chatId); } catch {}
+  setMode(s, 'neutral');
+  await replySafe(msg, '❌ Ticket cancelado. Si necesitas reportar algo más, dime.');
+  return true;
+}
+
+/**
+ * Handler para comando de edición explícito ("editar", "modificar")
+ */
+async function handleEditCommand(ctx) {
+  const { s, msg, replySafe, setMode } = ctx;
+
+  const draft = s?.draft;
+  if (!draft) {
+    await replySafe(msg, '⚠️ No hay ticket activo para editar.');
+    return true;
+  }
+
+  s._editingDraft = draft;
+  setMode(s, 'edit_ticket');
+
+  await replySafe(msg,
+    '✏️ *Modo edición*\n\n' +
+    'Dime qué quieres cambiar:\n' +
+    '• "Cambiar descripción a ..."\n' +
+    '• "Cambiar lugar a 1234"\n' +
+    '• "Cambiar área a IT"\n\n' +
+    'O escribe *listo* para terminar de editar.'
+  );
+  return true;
+}
+
+/**
+ * Handler para cambio de lugar ("en la 1234", "lugar: lobby")
+ */
+async function handlePlaceChange(ctx) {
+  const { s, msg, text, replySafe, detectPlace, normalizeAndSetLugar } = ctx;
+
+  const draft = s?.draft;
+  if (!draft) {
+    await replySafe(msg, '⚠️ No hay ticket activo.');
+    return true;
+  }
+
+  const newPlace = extractPlaceFromText(text);
+  if (!newPlace) {
+    await replySafe(msg, '⚠️ No pude identificar el nuevo lugar. Escríbelo de nuevo (ej: "en la 1234" o "lugar: lobby").');
+    return true;
+  }
+
+  let placeResult = null;
+  try {
+    if (typeof normalizeAndSetLugar === 'function') {
+      placeResult = await normalizeAndSetLugar(s, msg, newPlace, { fromEdit: true });
+    } else if (typeof detectPlace === 'function') {
+      placeResult = await detectPlace(newPlace);
+    }
+  } catch (e) {
+    if (DEBUG) console.warn('[PLACE_CHANGE] detectPlace error', e?.message);
+  }
+
+  const found = placeResult && (placeResult.found || placeResult.label || placeResult.lugar);
+
+  if (found) {
+    draft.lugar = placeResult.label || placeResult.lugar || placeResult.canonical_label || newPlace;
+  } else {
+    draft.lugar = newPlace;
+  }
+  s.draft = draft;
+
+  const preview = formatPreviewMessage(draft);
+  await replySafe(msg, `✅ Lugar actualizado a: *${draft.lugar}*\n\n${preview}\n\n_Responde *sí* para enviar o *no* para cancelar._`);
+  return true;
+}
+
+/**
+ * Handler para cambio de área ("es para IT", "área: mantenimiento")
+ */
+async function handleAreaChange(ctx) {
+  const { s, msg, text, replySafe } = ctx;
+
+  const draft = s?.draft;
+  if (!draft) {
+    await replySafe(msg, '⚠️ No hay ticket activo.');
+    return true;
+  }
+
+  const newArea = extractAreaFromText(text);
+  if (!newArea || !ALLOWED_AREAS.has(newArea)) {
+    await replySafe(msg, '⚠️ No pude identificar el área. Opciones válidas: IT, Mantenimiento, AMA/HSKP, RS/Room Service, Seguridad.');
+    return true;
+  }
+
+  draft.area_destino = newArea;
+  draft.areas = [newArea];
+  s.draft = draft;
+
+  syncAreasWithPrimary(s, draft);
+
+  const preview = formatPreviewMessage(draft);
+  await replySafe(msg, `✅ Área actualizada a: *${areaLabel(newArea)}*\n\n${preview}\n\n_Responde *sí* para enviar o *no* para cancelar._`);
+  return true;
+}
+
+/**
+ * Handler para número de habitación suelto ("1234")
+ */
+async function handleRoomNumber(ctx) {
+  const { s, msg, text, replySafe, detectPlace } = ctx;
+
+  const draft = s?.draft;
+  if (!draft) {
+    await replySafe(msg, '⚠️ No hay ticket activo.');
+    return true;
+  }
+
+  const roomNum = extractRoomNumber(text);
+  if (!roomNum) {
+    await replySafe(msg, '⚠️ No pude identificar el número de habitación.');
+    return true;
+  }
+
+  let placeResult = null;
+  try {
+    if (typeof detectPlace === 'function') {
+      placeResult = await detectPlace(roomNum);
+    }
+  } catch (e) {
+    if (DEBUG) console.warn('[ROOM_NUMBER] detectPlace error', e?.message);
+  }
+
+  const label = placeResult?.label || placeResult?.lugar || `Habitación ${roomNum}`;
+  draft.lugar = label;
+  s.draft = draft;
+
+  const preview = formatPreviewMessage(draft);
+  await replySafe(msg, `✅ Lugar actualizado a: *${label}*\n\n${preview}\n\n_Responde *sí* para enviar o *no* para cancelar._`);
+  return true;
+}
+
+/**
+ * Handler para detalle adicional ("también...", "además...")
+ */
+async function handleDetailFollowup(ctx) {
+  const { s, msg, text, replySafe } = ctx;
+
+  const draft = s?.draft;
+  if (!draft) {
+    await replySafe(msg, '⚠️ No hay ticket activo.');
+    return true;
+  }
+
+  let detail = text
+    .replace(/^(tambi[eé]n|adem[aá]s|y\s+tambi[eé]n|aparte|y\s+aparte|otro\s+detalle|otra\s+cosa|y\s+otra\s+cosa|ah,?\s+y?\s*)/i, '')
+    .trim();
+
+  if (!detail) {
+    await replySafe(msg, '¿Qué detalle adicional quieres agregar?');
+    return true;
+  }
+
+  draft.descripcion = draft.descripcion
+    ? `${draft.descripcion}. ${detail}`
+    : detail;
+  draft.descripcion_original = draft.descripcion;
+  s.draft = draft;
+
+  const preview = formatPreviewMessage(draft);
+  await replySafe(msg, `✅ Detalle agregado.\n\n${preview}\n\n_Responde *sí* para enviar o *no* para cancelar._`);
+  return true;
+}
+
+/**
+ * Handler IA para edición de UN SOLO ticket
  */
 async function handleEditSingleTicket(ctx) {
   const {
@@ -75,11 +368,8 @@ async function handleEditSingleTicket(ctx) {
   const tRaw = (text || '').trim();
   const t = tRaw.toLowerCase();
 
-  // Confirmación directa: enviar
   if (isYes(t)) {
     if (DEBUG) console.log('[EDIT-SINGLE] user confirmed send');
-
-    // ✅ defensivo: evitar doble dispatch por areas viejas
     syncAreasWithPrimary(s, draft);
 
     try {
@@ -88,7 +378,7 @@ async function handleEditSingleTicket(ctx) {
         await replySafe(msg, `✅ Ticket enviado: *${result.folio || result.id || 'SIN_FOLIO'}*`);
         s.draft = undefined;
         s._editingDraft = undefined;
-        try { resetSession(s.chatId); } catch (e) { if (DEBUG) console.warn('[EDIT-SINGLE] resetSession err', e?.message); }
+        try { resetSession(s.chatId); } catch (e) {}
         setMode(s, 'neutral');
       } else {
         await replySafe(msg, '❌ Error al enviar el ticket. Intenta de nuevo.');
@@ -100,13 +390,11 @@ async function handleEditSingleTicket(ctx) {
     return true;
   }
 
-  // Confirmación: cancelar envío
   if (isNo(t)) {
     await replySafe(msg, 'Ok — no se envió. Puedes seguir editando o escribir *listo* para volver al menú.');
     return true;
   }
 
-  // "listo" -> terminar edición y volver al menú (sin enviar)
   if (['listo', 'ok', 'terminar', 'finalizar', 'hecho'].includes(t)) {
     s._editingDraft = undefined;
     setMode(s, 'neutral');
@@ -114,13 +402,11 @@ async function handleEditSingleTicket(ctx) {
     return true;
   }
 
-  // Evitar enviar mensajes cortos a la IA
   if (tRaw.length < 3) {
-    await replySafe(msg, 'Escribe la edición que quieres aplicar (p.ej. "Cambia el lugar a 2101" o "Es una fuga de agua").');
+    await replySafe(msg, 'Escribe la edición que quieres aplicar (p.ej. "Cambia el lugar a 2101").');
     return true;
   }
 
-  // Invocamos al intérprete IA para obtener acciones
   let editIntent = null;
   try {
     editIntent = await interpret(ctx, tRaw, { currentTicket: draft, mode: 'single' });
@@ -153,58 +439,15 @@ async function handleEditSingleTicket(ctx) {
             placeRes = await detectPlace(value);
           }
         } catch (e) {
-          if (DEBUG) console.warn('[EDIT-SINGLE] normalize/detectPlace error', e?.message);
-          placeRes = null;
+          if (DEBUG) console.warn('[EDIT-SINGLE] detectPlace error', e?.message);
         }
 
-        const hasCandidates = placeRes && Array.isArray(placeRes.candidates) && placeRes.candidates.length > 0;
-        const found = !!(placeRes && (placeRes.found || placeRes.label || placeRes.lugar || placeRes.canonical_label));
-
-        if (found) {
-          draft.lugar = placeRes.label || placeRes.lugar || placeRes.canonical_label || String(value).trim();
-        } else if (hasCandidates) {
-          s._placeCandidates = placeRes.candidates;
-          s._pendingPlaceText = value;
-          await replySafe(msg,
-            `⚠️ No hay un match exacto para el lugar "${value}". Encontré coincidencias posibles:\n\n` +
-            placeRes.candidates.slice(0, 5).map((c, i) => `• ${i + 1}. ${c.label || c}`).join('\n') +
-            `\n\nResponde con el número para elegir, o escribe el lugar exactamente como aparece.`
-          );
-          setMode(s, 'choose_place_from_candidates');
-          return true;
-        } else {
-          if (DEBUG) console.warn('[EDIT-SINGLE] place not recognized', { value, placeRes });
-          let suggestions = null;
-          try {
-            if (typeof ctx?.findPlaceSuggestions === 'function') {
-              suggestions = await ctx.findPlaceSuggestions(value);
-            } else if (typeof detectPlace === 'function') {
-              const fuzzy = await detectPlace(value, { fuzzy: true });
-              suggestions = fuzzy?.candidates || fuzzy?.suggestions || null;
-            }
-          } catch (e) {
-            if (DEBUG) console.warn('[EDIT-SINGLE] suggestion lookup error', e?.message);
-          }
-          if (Array.isArray(suggestions) && suggestions.length) {
-            s._placeCandidates = suggestions;
-            s._pendingPlaceText = value;
-            await replySafe(msg,
-              `⚠️ LUGAR NO RECONOCIDO: "${value}".\n\nPosibles sugerencias:\n` +
-              suggestions.slice(0, 5).map((c, i) => `• ${i + 1}. ${c.label || c}`).join('\n') +
-              `\n\nResponde con el número para elegir, o escribe el lugar exactamente como aparece.`
-            );
-            setMode(s, 'choose_place_from_candidates');
-            return true;
-          }
-          await replySafe(msg,
-            `⚠️ LUGAR NO RECONOCIDO: "${value}".\n` +
-            `El lugar debe existir en el catálogo. Escribe el lugar de nuevo o usa un nombre más específico (p.ej. "Front Desk", "Lobby", "Habitación 2301").`
-          );
-          return true;
-        }
+        const found = placeRes && (placeRes.found || placeRes.label || placeRes.lugar);
+        draft.lugar = found
+          ? (placeRes.label || placeRes.lugar || placeRes.canonical_label)
+          : String(value).trim();
 
       } else if (field === 'area_destino' || field === 'area') {
-        // ✅ normaliza y reemplaza lista (no push)
         const raw = String(value).trim();
         let areaCode = null;
         try {
@@ -235,305 +478,11 @@ async function handleEditSingleTicket(ctx) {
       ? formatPreviewFn(draft)
       : JSON.stringify(draft, null, 2);
 
-    const resp =
-      `✅ Cambios aplicados:\n\n` +
-      `${preview}\n\n` +
-      `Responde *sí* para enviar o *no* para cancelar.`;
-
-    await replySafe(msg, resp);
+    await replySafe(msg, `✅ Cambios aplicados:\n\n${preview}\n\nResponde *sí* para enviar o *no* para cancelar.`);
     return true;
   }
 
-  await replySafe(msg, 'No entendí la edición. ¿Qué deseas cambiar exactamente? (p.ej. "Cambia la descripción a ...", "Poner lugar 2101")');
-  return true;
-}
-
-/**
- * Handler para modo confirm/preview
- */
-async function handleConfirmMode(ctx) {
-  const { s, msg, text, replySafe } = ctx;
-
-  if (!text) return false;
-
-  const classification = classifyConfirmMessage(text, s.draft);
-
-  if (DEBUG) console.log('[CONFIRM] classification', { text, classification, mode: s.mode });
-
-  switch (classification) {
-    case 'confirm':
-      return await handleConfirmYes(ctx);
-
-    case 'cancel':
-      return await handleConfirmNo(ctx);
-
-    case 'edit_command':
-      return await handleEditCommand(ctx);
-
-    case 'place_change':
-      return await handlePlaceChange(ctx);
-
-    case 'area_change':
-      return await handleAreaChange(ctx);
-
-    case 'room_number':
-      return await handleRoomNumber(ctx);
-
-    case 'detail_followup':
-      return await handleDetailFollowup(ctx);
-
-    case 'new_incident_candidate':
-      return await handleNewIncidentCandidate(ctx);
-
-    case 'long_message':
-      return await handleEditSingleTicket(ctx);
-
-    default:
-      if (text && text.trim().length >= 3) {
-        return await handleEditSingleTicket(ctx);
-      }
-      const preview = formatPreviewMessage(s.draft);
-      await replySafe(msg, preview + '\n\n_Responde *sí* para enviar o *no* para cancelar._');
-      return true;
-  }
-}
-
-/**
- * Confirmación positiva - enviar ticket
- */
-async function handleConfirmYes(ctx) {
-  const { s, msg, replySafe, finalizeAndDispatch, client, resetSession, setMode } = ctx;
-
-  if (!hasRequiredDraft(s.draft)) {
-    const preview = formatPreviewMessage(s.draft);
-    await replySafe(msg, '⚠️ Faltan datos:\n\n' + preview);
-    return true;
-  }
-
-  // ✅ defensivo: evitar doble dispatch por areas viejas
-  syncAreasWithPrimary(s, s.draft);
-
-  try {
-    const result = await finalizeAndDispatch({ client, msg, session: s });
-    if (!result?.success) {
-      await replySafe(msg, '❌ Error al enviar el ticket. Intenta de nuevo.');
-      return true;
-    } else {
-      await replySafe(msg, `✅ Ticket enviado: *${result.folio || result.id || 'SIN_FOLIO'}*`);
-      try { resetSession(s.chatId); } catch (e) { if (DEBUG) console.warn('[CONFIRM] resetSession error', e?.message); }
-      setMode(s, 'neutral');
-      return true;
-    }
-  } catch (e) {
-    if (DEBUG) console.error('[CONFIRM] dispatch error', e?.message);
-    await replySafe(msg, '❌ Error al enviar el ticket. Intenta de nuevo.');
-    return true;
-  }
-}
-
-/**
- * Cancelación - descartar ticket
- */
-async function handleConfirmNo(ctx) {
-  const { s, msg, replySafe, resetSession, setMode } = ctx;
-
-  resetSession(s.chatId);
-  setMode(s, 'neutral');
-  await replySafe(msg, '❌ Ticket cancelado. Si necesitas reportar algo más, cuéntame.');
-  return true;
-}
-
-/**
- * Comando de edición
- */
-async function handleEditCommand(ctx) {
-  const { s, msg, replySafe, setMode } = ctx;
-
-  setMode(s, 'edit_menu');
-  await replySafe(msg,
-    '✏️ ¿Qué quieres editar?\n\n' +
-    '• *1* — Descripción\n' +
-    '• *2* — Lugar\n' +
-    '• *3* — Área\n' +
-    '• *cancelar* — Volver al ticket'
-  );
-  return true;
-}
-
-/**
- * Cambio express de lugar
- */
-async function handlePlaceChange(ctx) {
-  const { s, msg, text, replySafe, normalizeAndSetLugar, setMode, detectPlace } = ctx;
-
-  const placeMatch = text.match(/(?:en|lugar[:\s]*)\s*(.+)/i);
-  const placeText = placeMatch ? placeMatch[1].trim() : text;
-
-  let placeRes = null;
-  try {
-    if (typeof normalizeAndSetLugar === 'function') {
-      placeRes = await normalizeAndSetLugar(s, msg, placeText, { rawText: text });
-    } else if (typeof detectPlace === 'function') {
-      placeRes = await detectPlace(placeText);
-    }
-  } catch (e) {
-    if (DEBUG) console.warn('[PLACE-CHANGE] normalize/detect error', e?.message);
-    placeRes = null;
-  }
-
-  const found = !!(placeRes && (placeRes.found || placeRes.label || placeRes.lugar || placeRes.canonical_label));
-  const hasCandidates = placeRes && Array.isArray(placeRes.candidates) && placeRes.candidates.length > 0;
-
-  if (found) {
-    s.draft.lugar = placeRes.label || placeRes.lugar || placeRes.canonical_label || placeText;
-    const preview = formatPreviewMessage(s.draft);
-    await replySafe(msg, '✅ Lugar actualizado:\n\n' + preview);
-    setMode(s, 'confirm');
-    return true;
-  } else if (hasCandidates) {
-    s._placeCandidates = placeRes.candidates;
-    s._pendingPlaceText = placeText;
-    await replySafe(msg,
-      `⚠️ No hay un match exacto para el lugar "${placeText}". Coincidencias posibles:\n\n` +
-      placeRes.candidates.slice(0, 5).map((c, i) => `• ${i + 1}. ${c.label || c}`).join('\n') +
-      `\n\nResponde con el número para elegir, o escribe el lugar exactamente como aparece.`
-    );
-    setMode(s, 'choose_place_from_candidates');
-    return true;
-  } else {
-    if (DEBUG) console.warn('[PLACE-CHANGE] place not recognized', { placeText, placeRes });
-    let suggestions = null;
-    try {
-      if (typeof ctx?.findPlaceSuggestions === 'function') {
-        suggestions = await ctx.findPlaceSuggestions(placeText);
-      } else if (typeof detectPlace === 'function') {
-        const fuzzy = await detectPlace(placeText, { fuzzy: true });
-        suggestions = fuzzy?.candidates || fuzzy?.suggestions || null;
-      }
-    } catch (e) {
-      if (DEBUG) console.warn('[PLACE-CHANGE] suggestion lookup error', e?.message);
-    }
-    if (Array.isArray(suggestions) && suggestions.length) {
-      s._placeCandidates = suggestions;
-      s._pendingPlaceText = placeText;
-      await replySafe(msg,
-        `⚠️ LUGAR NO RECONOCIDO: "${placeText}".\n\nPosibles sugerencias:\n` +
-        suggestions.slice(0, 5).map((c, i) => `• ${i + 1}. ${c.label || c}`).join('\n') +
-        `\n\nResponde con el número para elegir, o escribe el lugar exactamente como aparece.`
-      );
-      setMode(s, 'choose_place_from_candidates');
-      return true;
-    }
-
-    await replySafe(msg,
-      `⚠️ LUGAR NO RECONOCIDO: "${placeText}".\n` +
-      `El lugar debe existir en el catálogo. Escribe el lugar de nuevo o usa un nombre más específico (p.ej. "Front Desk", "Lobby", "Habitación 2301").`
-    );
-    return true;
-  }
-}
-
-/**
- * Cambio de área (REEMPLAZA areas[] siempre)
- */
-async function handleAreaChange(ctx) {
-  const { s, msg, text, replySafe, setMode, setDraftField } = ctx;
-
-  const areaMatch = (text || '').match(
-    /(?:para|de|área[:\s]*)\s*(it|mantenimiento|man|ama|hskp|seguridad|seg|rs|room\s*service)/i
-  );
-
-  if (areaMatch) {
-    const areaMap = {
-      it: 'IT',
-      mantenimiento: 'MAN',
-      man: 'MAN',
-      ama: 'AMA',
-      hskp: 'AMA',
-      seguridad: 'SEG',
-      seg: 'SEG',
-      rs: 'RS',
-      roomservice: 'RS',
-      'room service': 'RS',
-    };
-
-    const rawKey = areaMatch[1] || '';
-    const key = rawKey.toLowerCase().replace(/\s+/g, ' ').trim();
-    const mapped = areaMap[key] || areaMap[key.replace(/\s+/g, '')] || key.toUpperCase();
-
-    const areaCode = String(mapped || '').trim().toUpperCase();
-
-    // ✅ valida contra permitidas
-    if (!ALLOWED_AREAS.has(areaCode)) {
-      await replySafe(
-        msg,
-        `⚠️ Área inválida: *${mapped}*. Usa: RS, AMA, MAN, IT, SEG.`
-      );
-      setMode(s, 'confirm');
-      return true;
-    }
-
-    // ✅ set primary
-    setDraftField(s, 'area_destino', areaCode);
-
-    // ✅ IMPORTANT: reemplazar lista (no push)
-    s.draft.areas = [areaCode];
-
-    // ✅ CLAVE: si tu dispatch usa session.areas, también reemplázala
-    if (Array.isArray(s.areas)) s.areas = [areaCode];
-    if (Array.isArray(s._areas)) s._areas = [areaCode];
-
-    const preview = formatPreviewMessage(s.draft);
-    await replySafe(msg, `✅ Área: *${areaLabel(areaCode)}*\n\n${preview}`);
-    setMode(s, 'confirm');
-    return true;
-  }
-
-  setMode(s, 'choose_area_multi');
-  await replySafe(
-    msg,
-    '🏷️ Elige el área destino:\n\n' +
-      '• *1* — Mantenimiento\n' +
-      '• *2* — IT\n' +
-      '• *3* — HSKP\n' +
-      '• *4* — Room Service\n' +
-      '• *5* — Seguridad'
-  );
-  return true;
-}
-
-/**
- * Número de habitación suelto
- */
-async function handleRoomNumber(ctx) {
-  const { s, msg, text, replySafe, setDraftField, setMode } = ctx;
-
-  const roomNum = text.trim();
-  setDraftField(s, 'lugar', `Habitación ${roomNum}`);
-
-  const preview = formatPreviewMessage(s.draft);
-  await replySafe(msg, `✅ Lugar: *Habitación ${roomNum}*\n\n` + preview);
-  setMode(s, 'confirm');
-  return true;
-}
-
-/**
- * Detalle adicional (también..., además...)
- */
-async function handleDetailFollowup(ctx) {
-  const { s, msg, text, replySafe, addDetail, setMode } = ctx;
-
-  const detail = text.replace(/^(tambi[eé]n|adem[aá]s|y\s+tambi[eé]n|aparte|y\s+aparte|otro\s+detalle|otra\s+cosa)[,.]?\s*/i, '').trim();
-
-  if (detail) {
-    addDetail(s, detail);
-    const preview = formatPreviewMessage(s.draft);
-    await replySafe(msg, '✅ Detalle agregado:\n\n' + preview);
-  } else {
-    await replySafe(msg, '¿Qué más quieres agregar?');
-  }
-
-  setMode(s, 'confirm');
+  await replySafe(msg, 'No entendí la edición. ¿Qué deseas cambiar? (p.ej. "Cambia la descripción a ...", "Poner lugar 2101")');
   return true;
 }
 
@@ -541,43 +490,33 @@ async function handleDetailFollowup(ctx) {
  * Posible nuevo incidente con lugar diferente
  */
 async function handleNewIncidentCandidate(ctx) {
-  const {
-    s, msg, text, replySafe, setMode,
-    findStrongPlaceSignals, detectArea
-  } = ctx;
+  const { s, msg, text, replySafe, setMode, findStrongPlaceSignals, detectArea } = ctx;
 
-  const newPlace = findStrongPlaceSignals ? findStrongPlaceSignals(text) : null;
+  const hasNewIncident = looksLikeIncidentText(text);
+  const newPlace = (typeof findStrongPlaceSignals === 'function') ? findStrongPlaceSignals(text) : null;
   const currentPlace = s.draft?.lugar || '';
-
-  let isDifferentPlace = false;
-  if (newPlace && currentPlace) {
-    const newPlaceNorm = norm(newPlace.value);
-    const currentPlaceNorm = norm(currentPlace);
-    isDifferentPlace = !currentPlaceNorm.includes(newPlaceNorm) && !newPlaceNorm.includes(currentPlaceNorm);
-  }
+  const isDifferentPlace = !!(newPlace?.value && currentPlace && isDifferentPlaceStrong(currentPlace, newPlace.value));
 
   let newArea = null;
   try {
-    const areaResult = await detectArea(text);
-    newArea = areaResult?.area;
+    const areaResult = typeof detectArea === 'function' ? await detectArea(text) : null;
+    newArea = areaResult?.area || null;
   } catch {}
 
-  const isDifferentArea = newArea && s.draft?.area_destino && newArea !== s.draft.area_destino;
-
-  if (isDifferentPlace || isDifferentArea) {
+  if (isDifferentPlace && hasNewIncident) {
     s._pendingNewTicket = {
       descripcion: text,
       lugar: newPlace?.value || null,
       area_destino: newArea || null,
     };
 
-    const currentDesc = (s.draft.descripcion || '').substring(0, 60);
-    const newDesc = text.substring(0, 60);
+    const currentDesc = (s.draft?.descripcion || '').substring(0, 60);
+    const newDesc = String(text || '').substring(0, 60);
 
     await replySafe(msg,
       '🤔 *Detecté un problema en otro lugar.*\n\n' +
-      `📋 *Ticket actual:*\n   _"${currentDesc}..."_\n   📍 ${s.draft.lugar}\n\n` +
-      `🆕 *Nuevo problema:*\n   _"${newDesc}..."\n\n` +
+      `📋 *Ticket actual:*\n   _"${currentDesc}..."_\n   📍 ${s.draft?.lugar || '—'}\n\n` +
+      `🆕 *Nuevo problema:*\n   _"${newDesc}..."_\n\n` +
       '¿Qué quieres hacer?\n' +
       '• *1* — Crear ticket *nuevo* (además del actual)\n' +
       '• *2* — *Reemplazar* lugar del ticket actual\n' +
@@ -599,15 +538,74 @@ async function handleNewIncidentCandidate(ctx) {
 }
 
 /**
+ * Handler para modo confirm/preview
+ */
+async function handleConfirmMode(ctx) {
+  const { s, msg, text, replySafe, findStrongPlaceSignals } = ctx;
+
+  if (!text) return false;
+
+  // PRE-CHECK: nuevo lugar + nuevo incidente
+  try {
+    const tRaw = String(text || '').trim();
+
+    if (!isYes(tRaw) && !isNo(tRaw) && tRaw.length >= 6 && s?.draft?.lugar) {
+      const newPlace = (typeof findStrongPlaceSignals === 'function') ? findStrongPlaceSignals(tRaw) : null;
+      const hasNewPlace = !!newPlace?.value && isDifferentPlaceStrong(s.draft.lugar, newPlace.value);
+      const hasNewIncident = looksLikeIncidentText(tRaw);
+
+      if (hasNewPlace && hasNewIncident) {
+        if (DEBUG) console.log('[CONFIRM] precheck => new ticket');
+        return await handleNewIncidentCandidate(ctx);
+      }
+    }
+  } catch (e) {
+    if (DEBUG) console.warn('[CONFIRM] precheck error', e?.message);
+  }
+
+  const classification = classifyConfirmMessage(text, s.draft);
+  if (DEBUG) console.log('[CONFIRM] classification', { text, classification });
+
+  switch (classification) {
+    case 'confirm':
+      return await handleConfirmYes(ctx);
+    case 'cancel':
+      return await handleConfirmNo(ctx);
+    case 'edit_command':
+      return await handleEditCommand(ctx);
+    case 'place_change':
+      return await handlePlaceChange(ctx);
+    case 'area_change':
+      return await handleAreaChange(ctx);
+    case 'room_number':
+      return await handleRoomNumber(ctx);
+    case 'detail_followup':
+      return await handleDetailFollowup(ctx);
+    case 'new_incident_candidate':
+      return await handleNewIncidentCandidate(ctx);
+    case 'long_message':
+      return await handleEditSingleTicket(ctx);
+    case 'unknown':
+    default:
+      if (text && text.trim().length >= 3) {
+        return await handleEditSingleTicket(ctx);
+      }
+      const preview = formatPreviewMessage(s.draft);
+      await replySafe(msg, preview + '\n\n_Responde *sí* para enviar o *no* para cancelar._');
+      return true;
+  }
+}
+
+/**
  * Handler para modo confirm_new_ticket_decision
  */
 async function handleConfirmNewTicketDecision(ctx) {
-  const { s, text, replySafe, setMode } = ctx;
+  const { s, text, msg, replySafe, setMode } = ctx;
   const t = (text || '').trim().toLowerCase();
 
   if (!s._pendingNewTicket) {
     setMode(s, 'neutral');
-    await replySafe(ctx.msg, 'No hay nuevo ticket pendiente. Volviendo al menú principal.');
+    await replySafe(msg, 'No hay nuevo ticket pendiente. Volviendo al menú principal.');
     return true;
   }
 
@@ -615,22 +613,18 @@ async function handleConfirmNewTicketDecision(ctx) {
     s._multipleTickets = s._multipleTickets || [];
     if (s.draft && !s.draft._migratedToMultiple) {
       s.draft._migratedToMultiple = true;
-      // ✅ normaliza antes de migrar
       syncAreasWithPrimary(s, s.draft);
       s._multipleTickets.push({ ...s.draft });
     }
 
-    // ✅ normaliza el nuevo también
     const pending = { ...s._pendingNewTicket };
     syncAreasWithPrimary(s, pending);
-
     s._multipleTickets.push({ ...pending, _ticketNum: s._multipleTickets.length + 1 });
 
     s.draft = {};
     delete s._pendingNewTicket;
-
     setMode(s, 'multiple_tickets');
-    await replySafe(ctx.msg, '✅ Nuevo ticket creado además del actual. Ahora puedes gestionar múltiples tickets.');
+    await replySafe(msg, '✅ Nuevo ticket creado además del actual.');
     return true;
   }
 
@@ -638,25 +632,25 @@ async function handleConfirmNewTicketDecision(ctx) {
     s.draft.lugar = s._pendingNewTicket.lugar;
     s.draft.area_destino = s._pendingNewTicket.area_destino || s.draft.area_destino;
     s.draft.descripcion = s._pendingNewTicket.descripcion;
-
-    // ✅ defensivo: alinear areas
-    syncAreasWithPrimary(s, draft);
+    syncAreasWithPrimary(s, s.draft);
 
     delete s._pendingNewTicket;
     setMode(s, 'confirm');
 
-    await replySafe(ctx.msg, '✅ Lugar y descripción del ticket actual actualizados.');
+    const preview = formatPreviewMessage(s.draft);
+    await replySafe(msg, `✅ Ticket actualizado.\n\n${preview}\n\n_Responde *sí* para enviar o *no* para cancelar._`);
     return true;
   }
 
   if (t === 'cancelar' || t === 'cancel') {
     delete s._pendingNewTicket;
-    setMode(s, 'neutral');
-    await replySafe(ctx.msg, '❌ Nuevo mensaje descartado, manteniendo el ticket actual.');
+    setMode(s, 'confirm');
+    const preview = formatPreviewMessage(s.draft);
+    await replySafe(msg, `❌ Descartado.\n\n${preview}\n\n_Responde *sí* para enviar o *no* para cancelar._`);
     return true;
   }
 
-  await replySafe(ctx.msg, 'Por favor responde con *1*, *2* o *cancelar*.');
+  await replySafe(msg, 'Por favor responde con *1*, *2* o *cancelar*.');
   return true;
 }
 
@@ -671,7 +665,6 @@ async function handleConfirmBatch(ctx) {
 
   if (DEBUG) console.log('[CONFIRM_BATCH] handling', { response: text, ticketCount: batchTickets.length });
 
-  // Confirmar todos
   if (isYes(text)) {
     const results = [];
 
@@ -681,47 +674,34 @@ async function handleConfirmBatch(ctx) {
         const originalDraft = s.draft;
         s.draft = { ...ticket };
 
-        // Normalizar / validar área
         const rawArea = (s.draft.area_destino || '').toString().trim();
         let normArea = null;
-        try {
-          normArea = normalizeAreaCode(rawArea);
-        } catch (e) {
-          if (DEBUG) console.warn('[CONFIRM_BATCH] normalizeAreaCode error', e?.message);
-        }
+        try { normArea = normalizeAreaCode(rawArea); } catch (e) {}
         const areaToUse = (normArea || rawArea || '').toString().trim().toUpperCase();
 
         if (!areaToUse || !ALLOWED_AREAS.has(areaToUse)) {
-          if (DEBUG) console.warn('[CONFIRM_BATCH] invalid area', { idx: i, rawArea, normArea, areaToUse });
-          results.push({ success: false, index: i, ticket, error: 'invalid_area', rawArea, normArea });
+          results.push({ success: false, index: i, ticket, error: 'invalid_area' });
           s.draft = originalDraft;
           continue;
         }
 
         s.draft.area_destino = areaToUse;
-        // ✅ IMPORTANT: evitar doble dispatch por areas viejas
         s.draft.areas = [areaToUse];
 
         if (!hasRequiredDraft(s.draft)) {
-          if (DEBUG) console.warn('[CONFIRM_BATCH] missing fields', { idx: i, draft: s.draft });
           results.push({ success: false, index: i, ticket, error: 'missing_fields' });
           s.draft = originalDraft;
           continue;
         }
 
         const result = await finalizeAndDispatch({ client, msg, session: s, silent: true });
-
         if (result?.success) {
           results.push({ success: true, index: i, ticket, folio: result.folio, id: result.id });
         } else {
-          const err = result?.error || result?.message || 'dispatch_failed';
-          if (DEBUG) console.warn('[CONFIRM_BATCH] finalizeAndDispatch failed', { idx: i, err, result });
-          results.push({ success: false, index: i, ticket, error: err });
+          results.push({ success: false, index: i, ticket, error: result?.error || 'dispatch_failed' });
         }
-
         s.draft = originalDraft;
       } catch (e) {
-        if (DEBUG) console.warn('[CONFIRM_BATCH] dispatch error', e?.message);
         results.push({ success: false, index: i, ticket, error: e?.message || 'exception' });
       }
     }
@@ -735,127 +715,33 @@ async function handleConfirmBatch(ctx) {
     }
 
     if (failed.length > 0) {
-      response += `\n\n❌ *${failed.length} ticket(s) fallaron*:`;
-      failed.forEach((f) => {
-        const i = f.index + 1;
-        const shortErr = f.error || 'error desconocido';
-        const summary = formatTicketSummary(f.ticket, i);
-        response += `\n\n${i}. ${shortErr}\n${summary}`;
-      });
-
+      response += `\n\n❌ *${failed.length} ticket(s) fallaron*`;
       s._batchTickets = failed.map(f => f.ticket);
       setMode(s, 'confirm_batch');
-
-      response += `\n\nOpciones:\n• *editar N* — editar ticket N\n• *reenviar N* — intentar enviar solo N\n• *reenviar fallidos* — intentar enviar todos los fallidos\n• *cancelar* — descartar los tickets fallidos`;
+      response += '\n\nOpciones: *editar N*, *reenviar N*, *cancelar*';
       await replySafe(msg, response);
       return true;
     }
 
     s._batchTickets = [];
     await replySafe(msg, response);
-    try { resetSession(s.chatId); } catch (e) { if (DEBUG) console.warn('[CONFIRM_BATCH] resetSession error', e?.message); }
+    try { resetSession(s.chatId); } catch (e) {}
     return true;
   }
 
-  // Cancelar
   if (isNo(text)) {
     s._batchTickets = [];
-    try { resetSession(s.chatId); } catch (e) { if (DEBUG) console.warn('[CONFIRM_BATCH] resetSession error', e?.message); }
+    try { resetSession(s.chatId); } catch (e) {}
     await replySafe(msg, '❌ Tickets cancelados.');
     return true;
   }
 
-  // Reenviar fallidos
-  if (t === 'reenviar fallidos' || t === 'reenviar fallidos.' || t === 'reenviar fallidos!') {
-    if ((s._batchTickets || []).length === 0) {
-      await replySafe(msg, 'No hay tickets fallidos pendientes para reenviar.');
-      return true;
-    }
-    return handleConfirmBatch({ ...ctx, text: 'sí' });
-  }
-
-  // Editar un ticket específico
-  const editMatch = t.match(/^editar?\s*(\d+)/i);
-  if (editMatch) {
-    const ticketNum = parseInt(editMatch[1], 10) - 1;
-    if (ticketNum >= 0 && ticketNum < batchTickets.length) {
-      s._editingTicketNum = ticketNum;
-      setMode(s, 'edit_batch_ticket');
-
-      const ticket = batchTickets[ticketNum];
-      await replySafe(msg,
-        `✏️ Editando ticket ${ticketNum + 1}:\n\n` +
-        `• Descripción: ${ticket.descripcion || '—'}\n` +
-        `• Lugar: ${ticket.lugar || '—'}\n` +
-        `• Área: ${areaLabel(ticket.area_destino)}\n\n` +
-        '¿Qué quieres cambiar? (descripción/lugar/área/listo)'
-      );
-      return true;
-    }
-  }
-
-  // Reenviar un ticket específico
-  const resendMatch = t.match(/^reenviar\s*(\d+)/i);
-  if (resendMatch) {
-    const ticketNum = parseInt(resendMatch[1], 10) - 1;
-    if (ticketNum >= 0 && ticketNum < batchTickets.length) {
-      const onlyTicket = batchTickets[ticketNum];
-      const originalDraft = s.draft;
-      s.draft = { ...onlyTicket };
-
-      let normArea = null;
-      try {
-        normArea = normalizeAreaCode(s.draft.area_destino || '');
-      } catch (e) {
-        if (DEBUG) console.warn('[CONFIRM_BATCH] normalizeAreaCode error', e?.message);
-      }
-      const areaToUse = (normArea || (s.draft.area_destino || '')).toString().trim().toUpperCase();
-
-      if (!areaToUse || !ALLOWED_AREAS.has(areaToUse)) {
-        await replySafe(msg, `Área inválida para el ticket ${ticketNum + 1}. Usa: RS, AMA, MAN, IT, SEG. Usa *editar ${ticketNum + 1}* para corregirlo.`);
-        s.draft = originalDraft;
-        return true;
-      }
-
-      s.draft.area_destino = areaToUse;
-      // ✅ IMPORTANT: evitar doble dispatch por areas viejas
-      s.draft.areas = [areaToUse];
-
-      if (!hasRequiredDraft(s.draft)) {
-        await replySafe(msg, `Faltan campos en el ticket ${ticketNum + 1}. Usa *editar ${ticketNum + 1}* para completarlo.`);
-        s.draft = originalDraft;
-        return true;
-      }
-
-      try {
-        const result = await finalizeAndDispatch({ client, msg, session: s, silent: true });
-        s.draft = originalDraft;
-        if (result?.success) {
-          const remaining = batchTickets.filter((_, idx) => idx !== ticketNum);
-          s._batchTickets = remaining;
-          await replySafe(msg, `✅ Ticket reenviado: ${result.folio || result.id}`);
-          if (!s._batchTickets.length) {
-            try { resetSession(s.chatId); } catch (e) { if (DEBUG) console.warn('[CONFIRM_BATCH] resetSession error', e?.message); }
-          }
-        } else {
-          await replySafe(msg, `❌ No se pudo reenviar el ticket: ${result?.error || 'error desconocido'}`);
-        }
-      } catch (e) {
-        if (DEBUG) console.warn('[CONFIRM_BATCH] resend error', e?.message);
-        await replySafe(msg, `❌ Error reenviando ticket: ${e?.message || 'exception'}`);
-        s.draft = originalDraft;
-      }
-      return true;
-    }
-  }
-
-  // Mostrar resumen por defecto
+  // Mostrar resumen
   let summary = `📋 *${batchTickets.length} tickets pendientes:*\n\n`;
   batchTickets.forEach((tkt, i) => {
     summary += formatTicketSummary(tkt, i + 1) + '\n\n';
   });
-  summary += '_Responde *sí* para enviar todos, *no* para cancelar, *editar N* para modificar, o *reenviar N* para reenviar solo N._';
-
+  summary += '_Responde *sí* para enviar todos o *no* para cancelar._';
   await replySafe(msg, summary);
   return true;
 }

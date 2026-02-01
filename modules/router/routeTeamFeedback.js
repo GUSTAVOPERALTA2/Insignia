@@ -567,6 +567,9 @@ async function maybeHandleTeamFeedback(client, msg) {
 
   // Registrar evento
   if (typeof incidenceDB.appendIncidentEvent === 'function') {
+    // ✅ FIX: Resolver el nombre del autor antes de guardar
+    const authorName = await resolveAuthorName(msg);
+    
     await incidenceDB.appendIncidentEvent(incident.id, {
       event_type: statusUpdated ? 'status_with_evidence' : 'team_feedback',
       wa_msg_id: msg.id?._serialized || null,
@@ -574,6 +577,7 @@ async function maybeHandleTeamFeedback(client, msg) {
         source: hasMedia ? 'evidence_upload' : 'quoted_reply',
         text: body,
         author: msg.author || msg.from,
+        author_name: authorName,  // ✅ Nombre resuelto para el dashboard
         hasEvidence: savedEvidences.length > 0,
         evidenceCount: savedEvidences.length,
         evidenceIds: savedEvidences.map(e => e.id || e.filename),

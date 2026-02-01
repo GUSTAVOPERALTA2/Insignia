@@ -2,9 +2,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Procesa mensajes en GRUPOS destino para actualizar estado de tickets:
 // - T-L (done/listo) → marca como completado
-// - T-P (in_progress) → marca como en progreso  
+// - T-P (in_progress) → marca como en progreso
 // - T-C (canceled) → cancela el ticket
 // + Notifica al solicitante original con mensaje reescrito por IA
+// + (FIX) Si el técnico manda FOTO/archivo en el grupo al completar/avanzar,
+//         la evidencia se reenvía al solicitante y se guarda como adjunto.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { classifyGroupMessage } = require('../groups/groupUpdate');
@@ -17,7 +19,10 @@ const {
   closeIncident,
   updateIncidentStatus,
   appendIncidentEvent,
+  appendIncidentAttachments, // ✅ FIX: guardar evidencia
 } = require('../db/incidenceDB');
+
+const { MessageMedia } = require('whatsapp-web.js');
 
 const DEBUG = (process.env.VICEBOT_DEBUG || '1') === '1';
 const ENABLE_AI_REWRITE = !!process.env.OPENAI_API_KEY;
@@ -50,8 +55,8 @@ async function rewriteUpdateMessage(originalMessage, context = {}) {
     return cleanMessage(originalMessage);
   }
 
-  const { status, folio, lugar } = context;
-  const statusLabel = status === 'done' ? 'completado' : 
+  const { status } = context;
+  const statusLabel = status === 'done' ? 'completado' :
                       status === 'in_progress' ? 'en atención' : 'actualizado';
 
   try {
@@ -98,9 +103,11 @@ function cleanMessage(text) {
 // ──────────────────────────────────────────────────────────────
 // Safe reply (evita crash por session closed)
 // ──────────────────────────────────────────────────────────────
-async function safeReply(client, msg, text, options) {
+async function safeReply(client, msg, text, options = {}) {
+  // ✅ FIX: Siempre usar sendSeen: false para evitar markedUnread
+  const opts = { sendSeen: false, ...options };
   try {
-    return await msg.reply(text, undefined, options);
+    return await msg.reply(text, undefined, opts);
   } catch (e) {
     if (DEBUG) console.warn('[GROUP-UPDATE] msg.reply failed; fallback sendMessage', e?.message || e);
     try {
@@ -127,31 +134,20 @@ function actorKey(msg) {
 }
 
 function parseFoliosFromText(text = '') {
-  // ✅ Buscar folios con formato PREFIJO-NNN (permite emojis antes)
-  // Formatos válidos: MAN-007, IT-001, AMA-123, SEG-01, etc.
   const rx = /(?:^|[^\w])([A-Z]{2,5}-\d{2,6})\b/gi;
   const out = [];
   let m;
   while ((m = rx.exec(text))) out.push(m[1].toUpperCase());
-  
-  // También buscar con formato alternativo (por si hay espacios)
+
   const rx2 = /\b([A-Z]{2,5})\s*-\s*(\d{2,6})\b/gi;
   while ((m = rx2.exec(text))) {
     const folio = `${m[1].toUpperCase()}-${m[2]}`;
     if (!out.includes(folio)) out.push(folio);
   }
-  
-  if (DEBUG && out.length) console.log('[GROUP-UPDATE] parsed folios', { text: text.substring(0, 50), folios: out });
-  
-  return Array.from(new Set(out));
-}
 
-function brief(inc) {
-  const lugar = inc?.lugar || '—';
-  const desc = (inc?.descripcion || '').trim();
-  const d = desc.length > 60 ? desc.slice(0, 57) + '…' : (desc || '—');
-  const folio = inc?.folio || inc?.id || '—';
-  return `${folio} — ${lugar} — "${d}"`;
+  if (DEBUG && out.length) console.log('[GROUP-UPDATE] parsed folios', { text: text.substring(0, 50), folios: out });
+
+  return Array.from(new Set(out));
 }
 
 function isYes(text = '') {
@@ -169,20 +165,20 @@ function isNo(text = '') {
 // ──────────────────────────────────────────────────────────────
 let usersCache = null;
 let usersCacheTime = 0;
-const USERS_CACHE_TTL = 60000; // 1 minuto
+const USERS_CACHE_TTL = 60000;
 
 function loadUsersCache() {
   const now = Date.now();
   if (usersCache && (now - usersCacheTime) < USERS_CACHE_TTL) {
     return usersCache;
   }
-  
+
   try {
     const fs = require('fs');
     const path = require('path');
     const usersPath = process.env.USERS_PATH || './data/users.json';
     const fullPath = path.resolve(process.cwd(), usersPath);
-    
+
     if (fs.existsSync(fullPath)) {
       const data = fs.readFileSync(fullPath, 'utf8');
       usersCache = JSON.parse(data);
@@ -191,26 +187,26 @@ function loadUsersCache() {
   } catch (e) {
     if (DEBUG) console.warn('[GROUP-UPDATE] loadUsersCache err:', e?.message);
   }
-  
+
   return usersCache || {};
 }
 
 function findUserByPhone(phoneId) {
   const users = loadUsersCache();
   if (!users || !phoneId) return null;
-  
+
   const digits = String(phoneId).replace(/\D/g, '');
   if (digits.length < 10) return null;
-  
+
   const suffix = digits.slice(-12);
-  
+
   for (const [userId, userData] of Object.entries(users)) {
     const userDigits = String(userId).replace(/\D/g, '');
     if (userDigits.endsWith(suffix) || suffix.endsWith(userDigits.slice(-10))) {
       return { id: userId, ...userData };
     }
   }
-  
+
   const shortSuffix = digits.slice(-10);
   for (const [userId, userData] of Object.entries(users)) {
     const userDigits = String(userId).replace(/\D/g, '');
@@ -218,7 +214,7 @@ function findUserByPhone(phoneId) {
       return { id: userId, ...userData };
     }
   }
-  
+
   return null;
 }
 
@@ -226,24 +222,24 @@ async function resolveAuthorName(msg, client) {
   const authorId = msg.author || msg.from;
   let realPhoneId = null;
   let notifyName = null;
-  
+
   try {
     const rawData = msg._data || msg.rawData || {};
     if (rawData.notifyName) notifyName = rawData.notifyName.trim();
     if (!notifyName && rawData.pushname) notifyName = rawData.pushname.trim();
     if (!notifyName && msg.pushname) notifyName = msg.pushname.trim();
   } catch {}
-  
+
   try {
     const rawData = msg._data || msg.rawData || {};
     const possibleSources = [
       rawData.author, rawData.from, rawData.sender?.id, rawData.sender?.user, rawData.participant
     ];
-    
+
     for (const source of possibleSources) {
       if (!source) continue;
       let phoneCandidate = null;
-      
+
       if (typeof source === 'string') {
         if (source.includes('@c.us') || source.includes('@s.whatsapp.net')) {
           phoneCandidate = source.replace('@s.whatsapp.net', '@c.us');
@@ -260,14 +256,14 @@ async function resolveAuthorName(msg, client) {
           phoneCandidate = source._serialized;
         }
       }
-      
+
       if (phoneCandidate && !phoneCandidate.includes('@lid')) {
         realPhoneId = phoneCandidate;
         break;
       }
     }
   } catch {}
-  
+
   if (realPhoneId) {
     const userFromCache = findUserByPhone(realPhoneId);
     if (userFromCache) {
@@ -276,7 +272,7 @@ async function resolveAuthorName(msg, client) {
       return { name, cargo, source: 'users.json' };
     }
   }
-  
+
   if (notifyName) {
     const users = loadUsersCache();
     for (const [userId, userData] of Object.entries(users)) {
@@ -288,14 +284,14 @@ async function resolveAuthorName(msg, client) {
     }
     return { name: notifyName, cargo: null, source: 'notifyName' };
   }
-  
+
   if (realPhoneId && !realPhoneId.includes('@lid')) {
     const num = String(realPhoneId).replace(/@.*$/, '').replace(/\D/g, '');
     if (num.length >= 10) {
       return { name: num.slice(-10), cargo: null, source: 'phone_fallback' };
     }
   }
-  
+
   return { name: 'Equipo', cargo: null, source: 'default' };
 }
 
@@ -335,13 +331,13 @@ async function classifyIntent(msg) {
   try {
     const r = await classifyGroupMessage(text);
     if (DEBUG) console.log('[GROUP-UPDATE] classify:', r);
-    
+
     if (r && r.confidence >= 0.6 && r.intent !== 'OTRO') {
       return {
         intent: r.intent,
         confidence: r.confidence,
-        status: r.intent === 'T-L' ? 'done' : 
-                r.intent === 'T-P' ? 'in_progress' : 
+        status: r.intent === 'T-L' ? 'done' :
+                r.intent === 'T-P' ? 'in_progress' :
                 r.intent === 'T-C' ? 'canceled' : null
       };
     }
@@ -353,7 +349,7 @@ async function classifyIntent(msg) {
 }
 
 // ──────────────────────────────────────────────────────────────
-// Notificar al solicitante
+// Notificar al solicitante + reenviar evidencia
 // ──────────────────────────────────────────────────────────────
 let getRequesterForIncident = null;
 try {
@@ -365,7 +361,7 @@ try {
 
 function extractRequesterChatId(incident) {
   if (!incident) return null;
-  
+
   const candidates = [
     incident.chat_id,
     incident.chatId,
@@ -375,25 +371,77 @@ function extractRequesterChatId(incident) {
     incident.meta?.chatId,
     incident.meta?.originChatId,
   ];
-  
+
   for (const v of candidates) {
     if (v && typeof v === 'string' && v.includes('@') && !v.includes('@g.us')) {
       return v;
     }
   }
-  
+
   return null;
+}
+
+/**
+ * ✅ FIX: Reenviar media (si existe) al solicitante y guardarla como attachment
+ * - No revienta si falla, solo log.
+ * - Se llama desde notifyRequester para cubrir TODOS los paths.
+ */
+async function forwardEvidenceIfAny(client, msg, incident, requesterChatId, authorDisplay) {
+  if (!msg?.hasMedia) return false;
+
+  try {
+    const media = await msg.downloadMedia();
+    if (!media) return false;
+
+    // 1) Guardar adjunto en DB (opcional pero recomendado)
+    try {
+      if (incident?.id && typeof appendIncidentAttachments === 'function') {
+        await appendIncidentAttachments(incident.id, [{
+          filename: media.filename || `evidence_${incident.folio || 'ticket'}_${Date.now()}`,
+          mimetype: media.mimetype,
+          data: media.data,
+        }]);
+        if (DEBUG) console.log('[GROUP-UPDATE] evidence saved to DB', { folio: incident?.folio });
+      }
+    } catch (e) {
+      if (DEBUG) console.warn('[GROUP-UPDATE] appendIncidentAttachments err', e?.message || e);
+      // no fatal
+    }
+
+    // 2) Enviar media al solicitante
+    const out = new MessageMedia(media.mimetype, media.data, media.filename);
+
+    // Nota: en WA, cuando es foto+texto, a veces body viene vacío y caption vive en _data.caption
+    const captionText = (msg.caption || msg?._data?.caption || msg.body || '').trim();
+
+    const caption = [
+      `📎 Evidencia — *${incident.folio || 'Ticket'}*`,
+      captionText ? cleanMessage(captionText) : null,
+      authorDisplay ? `— _${authorDisplay}_` : null,
+    ].filter(Boolean).join('\n');
+
+    await client.sendMessage(requesterChatId, out, { caption });
+
+    if (DEBUG) console.log('[GROUP-UPDATE] evidence forwarded to requester', {
+      chatId: requesterChatId,
+      folio: incident?.folio,
+      hasCaption: !!captionText
+    });
+
+    return true;
+  } catch (e) {
+    if (DEBUG) console.warn('[GROUP-UPDATE] forwardEvidenceIfAny err:', e?.message || e);
+    return false;
+  }
 }
 
 async function notifyRequester(client, msg, incident, newStatus) {
   let requesterChatId = extractRequesterChatId(incident);
-  
+
   if (!requesterChatId && getRequesterForIncident) {
-    try {
-      requesterChatId = getRequesterForIncident(incident.id);
-    } catch {}
+    try { requesterChatId = getRequesterForIncident(incident.id); } catch {}
   }
-  
+
   if (!requesterChatId) {
     if (DEBUG) console.log('[GROUP-UPDATE] no requester chat_id for:', incident.folio);
     return false;
@@ -402,42 +450,104 @@ async function notifyRequester(client, msg, incident, newStatus) {
   try {
     const authorInfo = await resolveAuthorName(msg, client);
     const authorDisplay = formatAuthorDisplay(authorInfo);
-    const originalMessage = (msg.body || '').trim();
-    
-    const rewrittenMessage = await rewriteUpdateMessage(originalMessage, {
-      status: newStatus,
-      folio: incident.folio,
-      lugar: incident.lugar
-    });
 
-    const statusEmoji = newStatus === 'done' ? '✅' : 
-                        newStatus === 'in_progress' ? '🔄' : 
-                        newStatus === 'canceled' ? '🚫' : '📝';
-    const statusLabel = newStatus === 'done' ? 'Completado' : 
-                        newStatus === 'in_progress' ? 'En atención' : 
-                        newStatus === 'canceled' ? 'Cancelado' : 'Actualización';
+    // A veces body viene vacío si es media; caption trae texto.
+    // Si ambos vacíos, no forzar reescritura con string vacío.
+    const originalMessage = String((msg.body || msg.caption || '')).trim();
 
+    const statusEmoji = newStatus === 'done' ? '✅'
+      : newStatus === 'in_progress' ? '🔄'
+      : newStatus === 'canceled' ? '🚫' : '📝';
+
+    const statusLabel = newStatus === 'done' ? 'Completado'
+      : newStatus === 'in_progress' ? 'En atención'
+      : newStatus === 'canceled' ? 'Cancelado' : 'Actualización';
+
+    // Reescribe SOLO si hay texto.
+    let rewrittenMessage = '';
+    if (originalMessage) {
+      rewrittenMessage = await rewriteUpdateMessage(originalMessage, {
+        status: newStatus,
+        folio: incident.folio,
+        lugar: incident.lugar
+      });
+    }
+
+    const bodyForNotification = (rewrittenMessage || cleanMessage(originalMessage) || '').trim();
+
+    // Si no hay texto y es solo media, igual mandamos encabezado + autor.
     const notification = [
       `${statusEmoji} *${incident.folio}* — ${statusLabel}`,
-      ``,
-      rewrittenMessage,
-      ``,
+      bodyForNotification ? `\n${bodyForNotification}\n` : '',
       `— _${authorDisplay}_`
-    ].join('\n');
+    ].join('\n').trim();
 
-    await client.sendMessage(requesterChatId, notification);
-    
-    if (DEBUG) console.log('[GROUP-UPDATE] notified requester', { 
-      chatId: requesterChatId, 
+    // ─────────────────────────────────────────
+    // MEDIA: igual que emisor → grupo
+    // - Si este msg trae media, usarlo
+    // - Si no trae media pero cita uno con media, usar el citado
+    // ─────────────────────────────────────────
+    let mediaSourceMsg = null;
+
+    if (msg.hasMedia) {
+      mediaSourceMsg = msg;
+    } else if (msg.hasQuotedMsg) {
+      try {
+        const quoted = await msg.getQuotedMessage();
+        // quoted puede traer media aunque el actual no
+        if (quoted?.hasMedia) mediaSourceMsg = quoted;
+      } catch (e) {
+        if (DEBUG) console.warn('[GROUP-UPDATE] getQuotedMessage failed', e?.message || e);
+      }
+    }
+
+    // Si hay media, descargar y reenviar con caption.
+    if (mediaSourceMsg) {
+      try {
+        const media = await mediaSourceMsg.downloadMedia();
+        if (media) {
+          if (typeof safeSendMessage === 'function') {
+            await safeSendMessage(client, requesterChatId, media, { caption: notification });
+          } else {
+            await client.sendMessage(requesterChatId, media, { caption: notification });
+          }
+
+          if (DEBUG) console.log('[GROUP-UPDATE] notified requester (with media)', {
+            chatId: requesterChatId,
+            folio: incident.folio,
+            usedQuoted: mediaSourceMsg !== msg,
+            mediaType: String(mediaSourceMsg?.type || '')
+          });
+
+          return true;
+        }
+      } catch (eMedia) {
+        if (DEBUG) console.warn('[GROUP-UPDATE] download/send media failed, fallback to text', eMedia?.message || eMedia);
+        // sigue a texto
+      }
+    }
+
+    // fallback: solo texto
+    if (typeof safeSendMessage === 'function') {
+      await safeSendMessage(client, requesterChatId, notification);
+    } else {
+      await client.sendMessage(requesterChatId, notification);
+    }
+
+    if (DEBUG) console.log('[GROUP-UPDATE] notified requester', {
+      chatId: requesterChatId,
       folio: incident.folio,
       author: authorDisplay
     });
+
     return true;
   } catch (e) {
-    if (DEBUG) console.warn('[GROUP-UPDATE] notify requester error:', e?.message);
+    if (DEBUG) console.warn('[GROUP-UPDATE] notify requester error:', e?.message || e);
     return false;
   }
 }
+
+
 
 // ──────────────────────────────────────────────────────────────
 // Actualizar ticket por folio explícito
@@ -447,7 +557,6 @@ async function tryUpdateByFolio(client, msg, newStatus) {
   const folios = parseFoliosFromText(text);
   if (!folios.length) return null;
 
-  // Resolver nombre del autor una vez para todos los folios
   const authorInfo = await resolveAuthorName(msg, client);
   const authorName = formatAuthorDisplay(authorInfo);
 
@@ -455,14 +564,14 @@ async function tryUpdateByFolio(client, msg, newStatus) {
   for (const folio of folios) {
     try {
       const inc = await getIncidentByFolio(folio);
-      if (!inc) { 
-        results.push({ folio, ok: false, reason: 'NOT_FOUND' }); 
-        continue; 
+      if (!inc) {
+        results.push({ folio, ok: false, reason: 'NOT_FOUND' });
+        continue;
       }
-      
+
       const currentStatus = String(inc.status || '').toLowerCase();
       if (currentStatus === 'done' || currentStatus === 'closed' || currentStatus === 'canceled') {
-        results.push({ folio, ok: false, reason: 'ALREADY_CLOSED' }); 
+        results.push({ folio, ok: false, reason: 'ALREADY_CLOSED' });
         continue;
       }
 
@@ -480,8 +589,8 @@ async function tryUpdateByFolio(client, msg, newStatus) {
       await appendIncidentEvent(inc.id, {
         event_type: 'group_status_update',
         wa_msg_id: msg.id?._serialized || null,
-        payload: { 
-          source: 'folio_explicit', 
+        payload: {
+          source: 'folio_explicit',
           newStatus,
           text,
           author: msg.author || msg.from,
@@ -500,9 +609,9 @@ async function tryUpdateByFolio(client, msg, newStatus) {
   const oks = results.filter(r => r.ok).map(r => r.folio);
   const fails = results.filter(r => !r.ok).map(r => `${r.folio} (${r.reason})`);
 
-  const statusEmoji = newStatus === 'done' ? '✅' : 
+  const statusEmoji = newStatus === 'done' ? '✅' :
                       newStatus === 'in_progress' ? '🔄' : '🚫';
-  const statusLabel = newStatus === 'done' ? 'Completado' : 
+  const statusLabel = newStatus === 'done' ? 'Completado' :
                       newStatus === 'in_progress' ? 'En progreso' : 'Cancelado';
 
   if (oks.length && !fails.length) {
@@ -525,9 +634,9 @@ async function tryUpdateByQuotedMessage(client, msg, newStatus) {
   try {
     const quoted = await msg.getQuotedMessage();
     const quotedBody = quoted?.body || '';
-    
+
     if (DEBUG) console.log('[GROUP-UPDATE] quoted message body:', quotedBody.substring(0, 100));
-    
+
     const folios = parseFoliosFromText(quotedBody);
     if (!folios.length) {
       if (DEBUG) console.log('[GROUP-UPDATE] no folio found in quoted message');
@@ -536,14 +645,14 @@ async function tryUpdateByQuotedMessage(client, msg, newStatus) {
 
     const folio = folios[0];
     if (DEBUG) console.log('[GROUP-UPDATE] found folio in quote:', folio);
-    
+
     const inc = await getIncidentByFolio(folio);
-    
+
     if (!inc) {
       if (DEBUG) console.log('[GROUP-UPDATE] incident not found for folio:', folio);
       return null;
     }
-    
+
     const currentStatus = String(inc.status || '').toLowerCase();
     if (currentStatus === 'done' || currentStatus === 'closed' || currentStatus === 'canceled') {
       await safeReply(client, msg, `⚠️ El ticket *${folio}* ya está cerrado.`);
@@ -561,15 +670,14 @@ async function tryUpdateByQuotedMessage(client, msg, newStatus) {
       await updateIncidentStatus(inc.id, newStatus);
     }
 
-    // Resolver nombre del autor para el evento
     const authorInfo = await resolveAuthorName(msg, client);
     const authorName = formatAuthorDisplay(authorInfo);
 
     await appendIncidentEvent(inc.id, {
       event_type: 'group_status_update',
       wa_msg_id: msg.id?._serialized || null,
-      payload: { 
-        source: 'quoted_message', 
+      payload: {
+        source: 'quoted_message',
         newStatus,
         text: msg.body,
         author: msg.author || msg.from,
@@ -579,9 +687,9 @@ async function tryUpdateByQuotedMessage(client, msg, newStatus) {
 
     await notifyRequester(client, msg, inc, newStatus);
 
-    const statusEmoji = newStatus === 'done' ? '✅' : 
+    const statusEmoji = newStatus === 'done' ? '✅' :
                         newStatus === 'in_progress' ? '🔄' : '🚫';
-    const statusLabel = newStatus === 'done' ? 'Completado' : 
+    const statusLabel = newStatus === 'done' ? 'Completado' :
                         newStatus === 'in_progress' ? 'En progreso' : 'Cancelado';
 
     await safeReply(client, msg, `${statusEmoji} *${folio}* — ${statusLabel}`);
@@ -623,10 +731,10 @@ async function tryUpdateRecentTicket(client, msg, newStatus) {
 
   if (recentCandidates.length === 1) {
     const inc = recentCandidates[0];
-    
-    if (DEBUG) console.log('[GROUP-UPDATE] auto-select single recent ticket', { 
-      folio: inc.folio, 
-      windowMins: AUTO_SELECT_WINDOW_MINS 
+
+    if (DEBUG) console.log('[GROUP-UPDATE] auto-select single recent ticket', {
+      folio: inc.folio,
+      windowMins: AUTO_SELECT_WINDOW_MINS
     });
 
     if (newStatus === 'canceled') {
@@ -646,8 +754,8 @@ async function tryUpdateRecentTicket(client, msg, newStatus) {
   }
 
   if (recentCandidates.length > 1) {
-    if (DEBUG) console.log('[GROUP-UPDATE] multiple recent tickets', { 
-      count: recentCandidates.length 
+    if (DEBUG) console.log('[GROUP-UPDATE] multiple recent tickets', {
+      count: recentCandidates.length
     });
     return await showSelectionMenu(client, msg, recentCandidates, newStatus);
   }
@@ -666,7 +774,7 @@ async function tryUpdateRecentTicket(client, msg, newStatus) {
     try {
       const cfg = await loadGroupsConfig();
       const area = getAreaByGroupId(msg.from, cfg);
-      
+
       if (area) {
         const list = await listOpenIncidentsByArea(area, { limit: 10 });
         if (Array.isArray(list) && list.length) allCandidates = list;
@@ -682,8 +790,8 @@ async function tryUpdateRecentTicket(client, msg, newStatus) {
     return null;
   }
 
-  if (DEBUG) console.log('[GROUP-UPDATE] showing menu (>10min or multiple)', { 
-    count: allCandidates.length 
+  if (DEBUG) console.log('[GROUP-UPDATE] showing menu (>10min or multiple)', {
+    count: allCandidates.length
   });
   return await showSelectionMenu(client, msg, allCandidates, newStatus);
 }
@@ -701,14 +809,13 @@ async function updateTicketAndNotify(client, msg, inc, newStatus, source) {
       await updateIncidentStatus(inc.id, newStatus);
     }
 
-    // Resolver nombre del autor para el evento
     const authorInfo = await resolveAuthorName(msg, client);
     const authorName = formatAuthorDisplay(authorInfo);
 
     await appendIncidentEvent(inc.id, {
       event_type: 'group_status_update',
       wa_msg_id: msg.id?._serialized || null,
-      payload: { 
+      payload: {
         source,
         newStatus,
         text: msg.body,
@@ -719,9 +826,9 @@ async function updateTicketAndNotify(client, msg, inc, newStatus, source) {
 
     await notifyRequester(client, msg, inc, newStatus);
 
-    const statusEmoji = newStatus === 'done' ? '✅' : 
+    const statusEmoji = newStatus === 'done' ? '✅' :
                         newStatus === 'in_progress' ? '🔄' : '🚫';
-    const statusLabel = newStatus === 'done' ? 'Completado' : 
+    const statusLabel = newStatus === 'done' ? 'Completado' :
                         newStatus === 'in_progress' ? 'En progreso' : 'Cancelado';
 
     await safeReply(client, msg, `${statusEmoji} *${inc.folio}* — ${statusLabel}`);
@@ -736,8 +843,8 @@ async function showSelectionMenu(client, msg, candidates, newStatus) {
   const key = actorKey(msg);
   setSession(key, { kind: 'disambiguate', candidates, newStatus, originalMessage: msg.body });
 
-  const statusAction = newStatus === 'done' ? 'marcar como *completado*' : 
-                       newStatus === 'in_progress' ? 'marcar *en progreso*' : 
+  const statusAction = newStatus === 'done' ? 'marcar como *completado*' :
+                       newStatus === 'in_progress' ? 'marcar *en progreso*' :
                        '*cancelar*';
 
   const lines = candidates.slice(0, 8).map((c, i) => {
@@ -756,10 +863,10 @@ async function showSelectionMenu(client, msg, candidates, newStatus) {
     client,
     msg,
     `¿Cuál ticket quieres ${statusAction}?\n\n` +
-    lines.join('\n\n') + 
+    lines.join('\n\n') +
     footer
   );
-  
+
   return { handled: true, awaitingSelection: true };
 }
 
@@ -783,22 +890,21 @@ async function maybeHandleSessionResponse(client, msg) {
           note: text,
           wa_msg_id: msg.id?._serialized || null,
         });
-        
-        // Resolver nombre del autor para el evento
+
         const authorInfo = await resolveAuthorName(msg, client);
         const authorName = formatAuthorDisplay(authorInfo);
-        
+
         await appendIncidentEvent(s.incident.id, {
           event_type: 'group_cancel_ack',
           wa_msg_id: msg.id?._serialized || null,
-          payload: { 
-            source: 'confirm_one_open', 
+          payload: {
+            source: 'confirm_one_open',
             text,
             author: msg.author || msg.from,
             author_name: authorName
           }
         });
-        
+
         await notifyRequester(client, msg, s.incident, 'canceled');
         await safeReply(client, msg, `🚫 Cancelado *${s.incident.folio}*`);
         return true;
@@ -827,7 +933,7 @@ async function maybeHandleSessionResponse(client, msg) {
       /^ninguno\s+de\s+esos/i, /^me\s+equivoqu[eé]/i,
       /^error$/i, /^stop$/i, /^x$/i, /^0$/,
     ];
-    
+
     if (cancelPatterns.some(rx => rx.test(text))) {
       clearSession(key);
       await safeReply(client, msg, '👍 Entendido, cancelado. Si necesitas algo más, avísame.');
@@ -836,9 +942,9 @@ async function maybeHandleSessionResponse(client, msg) {
 
     const numMatch = text.match(/^\s*(\d{1,2})\s*$/);
     const folios = parseFoliosFromText(text);
-    
+
     let cand = null;
-    
+
     if (numMatch) {
       const idx = parseInt(numMatch[1], 10) - 1;
       cand = s.candidates[idx];
@@ -859,8 +965,7 @@ async function maybeHandleSessionResponse(client, msg) {
     }
 
     clearSession(key);
-    
-    // ✅ FIX: Usar el mensaje original guardado en la sesión para notificar
+
     const originalMsg = { ...msg, body: s.originalMessage || msg.body };
     return await updateTicketAndNotify(client, originalMsg, cand, s.newStatus, 'disambiguation');
   }
@@ -892,13 +997,14 @@ async function maybeHandleGroupCancel(client, msg) {
   const recentRes = await tryUpdateRecentTicket(client, msg, intent.status);
   if (recentRes?.handled) return true;
 
-  const statusAction = intent.status === 'done' ? 'marcar como completado' : 
-                       intent.status === 'in_progress' ? 'marcar en progreso' : 
+  const statusAction = intent.status === 'done' ? 'marcar como completado' :
+                       intent.status === 'in_progress' ? 'marcar en progreso' :
                        'cancelar';
   await safeReply(client, msg, `¿Cuál ticket quieres ${statusAction}? Indica el *folio* (ej. MAN-007)`);
   return true;
 }
 
+// (Se queda false: routeTeamFeedback está en otro router; aquí no lo usamos)
 async function maybeHandleTeamFeedback(client, msg) {
   return false;
 }

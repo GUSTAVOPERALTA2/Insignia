@@ -3,6 +3,9 @@
  * Handlers para selección de lugar:
  * - ask_place: solicitar lugar al usuario
  * - choose_place_from_candidates: elegir entre candidatos fuzzy
+ * 
+ * ✅ FIX: Permite lugares "freeform" si el texto suena a lugar
+ *         aunque no esté en el catálogo
  */
 
 const {
@@ -11,7 +14,113 @@ const {
   formatPreviewMessage,
 } = require('./shared');
 
+// ══════════════════════════════════════════════════════════════════════════════
+// HELPERS PARA LUGARES FREEFORM
+// ══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Palabras clave que indican que el texto es probablemente un lugar
+ */
+const PLACE_KEYWORDS = [
+  // Zonas de empleados
+  'locker', 'lockers', 'loker', 'lokers', 'vestidor', 'vestidores',
+  'comedor', 'cafeteria', 'cafetería', 'colegas', 'colaboradores', 'empleados',
+  
+  // Baños
+  'baño', 'baños', 'bano', 'banos', 'restroom', 'wc', 'sanitario', 'sanitarios',
+  'mingitorio', 'regadera', 'regaderas',
+  
+  // Áreas comunes
+  'lobby', 'recepcion', 'recepción', 'entrada', 'salida', 'pasillo', 'pasillos',
+  'elevador', 'elevadores', 'escalera', 'escaleras', 'estacionamiento', 'parking',
+  
+  // Servicios
+  'cocina', 'almacen', 'almacén', 'bodega', 'oficina', 'oficinas',
+  'lavanderia', 'lavandería', 'mantenimiento', 'cuarto', 'cuartos',
+  
+  // Exteriores
+  'jardin', 'jardín', 'jardines', 'terraza', 'azotea', 'rooftop',
+  'alberca', 'piscina', 'pool', 'playa', 'muelle',
+  
+  // Estructuras
+  'torre', 'edificio', 'bloque', 'ala', 'piso', 'nivel', 'planta',
+  'area', 'área', 'zona', 'sector',
+  
+  // Específicos de hotel
+  'spa', 'gym', 'gimnasio', 'restaurante', 'bar', 'salon', 'salón',
+  'business', 'center', 'centro', 'tienda', 'boutique',
+  
+  // Staff areas
+  'staff', 'back', 'house', 'backhouse', 'boh',
+];
+
+/**
+ * Patrones regex que indican lugar
+ */
+const PLACE_PATTERNS = [
+  /\b(en|del?|cerca|junto|frente)\s+(el|la|los|las)?\s*\w+/i,
+  /\btorre\s*[a-z0-9]+/i,
+  /\bpiso\s*\d+/i,
+  /\bnivel\s*\d+/i,
+  /\bplanta\s*(alta|baja|\d+)/i,
+  /\barea\s+de\s+\w+/i,
+  /\bzona\s+de\s+\w+/i,
+  /\b(hombres?|mujeres?|damas?|caballeros?)\b/i,
+];
+
+/**
+ * Detecta si un texto probablemente describe un lugar (para aceptar freeform)
+ */
+function looksLikePlaceFreeform(text) {
+  if (!text) return false;
+  const t = norm(text);
+  
+  if (t.length < 3) return false;
+  
+  // Contiene palabras clave de lugar
+  const hasKeyword = PLACE_KEYWORDS.some(kw => t.includes(norm(kw)));
+  if (hasKeyword) return true;
+  
+  // Coincide con patrones de lugar
+  const matchesPattern = PLACE_PATTERNS.some(rx => rx.test(text));
+  if (matchesPattern) return true;
+  
+  // Empieza con "en " o "del "
+  if (/^(en|del?|cerca|junto)\s+/i.test(t)) return true;
+  
+  return false;
+}
+
+/**
+ * Limpia y normaliza un texto de lugar freeform
+ */
+function cleanFreeformPlace(text) {
+  if (!text) return '';
+  
+  let cleaned = String(text).trim();
+  
+  // Remover "en " al inicio si existe
+  cleaned = cleaned.replace(/^en\s+/i, '');
+  
+  // Capitalizar primera letra de cada palabra significativa
+  cleaned = cleaned
+    .toLowerCase()
+    .split(' ')
+    .map((word, i) => {
+      const lowercaseWords = ['de', 'del', 'la', 'el', 'los', 'las', 'en', 'a', 'y'];
+      if (i > 0 && lowercaseWords.includes(word)) {
+        return word;
+      }
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(' ');
+  
+  return cleaned;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DETECCIÓN DE CORRECCIONES Y PROBLEMAS
+// ══════════════════════════════════════════════════════════════════════════════
 
 /**
  * Detecta si el mensaje parece una corrección/edición en vez de un lugar
@@ -22,7 +131,7 @@ function looksLikeCorrection(text) {
   
   const correctionPatterns = [
     /^(perd[oó]n|disculpa|sorry|ups|oops)/i,
-    /^(no,?\s+)?(es|era|ser[ií]a)\s+(el|la|una?|los|las)\s+/i,  // "es la impresora", "no, es el aire"
+    /^(no,?\s+)?(es|era|ser[ií]a)\s+(el|la|una?|los|las)\s+/i,
     /^(quise|quer[ií]a)\s+decir/i,
     /^me\s+equivoqu[eé]/i,
     /^(en\s+realidad|realmente|actually)/i,
@@ -47,12 +156,10 @@ function looksLikeProblemDescription(text) {
     /\b(necesita|requiere|ocupa)\s+(reparaci[oó]n|arreglo|revisi[oó]n|cambio)\b/i,
     /\b(hay|tiene|present[ao])\s+(una?\s+)?(fuga|goteo|problema|falla)\b/i,
     /\bes\s+(el|la|una?)\s+(impresora|tv|television|aire|clima|wifi|internet|luz|foco|puerta|regadera|lavabo|wc|inodoro|minisplit)\b/i,
-    // "no hay X" - falta de servicio/recurso
     /\bno\s+hay\s+(luz|agua|se[ñn]al|internet|wifi|gas|electricidad|corriente|presion|caliente)\b/i,
     /\b(sin|falta)\s+(luz|agua|se[ñn]al|internet|wifi|gas|electricidad|corriente|presion)\b/i,
-    // Solicitudes de ayuda/acción
     /\b(me\s+)?ayuda[ns]?\s+(a|con)\b/i,
-    /\bayuda\b.*\b(no\s+hay|no\s+funciona|falla|roto)\b/i,  // "ayuda no hay luz"
+    /\bayuda\b.*\b(no\s+hay|no\s+funciona|falla|roto)\b/i,
     /\b(pueden|podrian|podría[ns]?)\s+(revisar|arreglar|cambiar|traer|quitar|poner)\b/i,
     /\b(necesito|ocupo|requiero)\s+(que|ayuda)\b/i,
     /\b(revisar|arreglar|cambiar|reparar|limpiar)\s+(el|la|los|las|una?)?\s*\w+/i,
@@ -73,13 +180,12 @@ function hasPlaceInText(text) {
   if (/\b\d{3,4}\b/.test(text)) return true;
   
   // Patrones de lugar con preposición
-  // "en el/la/los X", "en X"
   const placePrepositionPatterns = [
     /\ben\s+(el\s+)?sal[oó]n\s+\w+/i,
     /\ben\s+(la\s+)?(cocina|alberca|piscina|gym|gimnasio|lobby|recepci[oó]n|terraza|playa|jard[ií]n)/i,
     /\ben\s+(el\s+)?(restaurante|bar|estacionamiento|parking|elevador|pasillo|ba[nñ]o)/i,
     /\ben\s+(la\s+)?habitaci[oó]n/i,
-    /\ben\s+\w+flores\b/i,  // Nombres como "Miraflores"
+    /\ben\s+\w+flores\b/i,
     /\ben\s+(el\s+)?(nido|roof|rooftop|spa|business)/i,
   ];
   
@@ -87,6 +193,7 @@ function hasPlaceInText(text) {
   
   // Lugares conocidos al final del texto
   const knownPlacesAtEnd = [
+    /\b(ba[nñ]o|wc|sanitario|locker|loker|vestidor)\b/i,
     /\b(lobby|recepci[oó]n|alberca|pool|gym|gimnasio|spa|terraza|playa|jard[ií]n|cocina|restaurante|bar|nido|roof)\s*$/i,
     /\bsal[oó]n\s+\w+\s*$/i,
     /\bmiraflores\s*$/i,
@@ -104,19 +211,33 @@ function extractPlaceFromText(text) {
   // Número de habitación
   const roomMatch = text.match(/\b(\d{3,4})\b/);
   if (roomMatch) return `Habitación ${roomMatch[1]}`;
-  
+
+  // Albercas específicas
+  if (/\b(adults?\s*pool|alberca\s*(de\s*)?adultos|piscina\s*adultos)\b/i.test(text)) {
+    return 'alberca de adultos';
+  }
+  if (/\b(family\s*pool|alberca\s*familiar|piscina\s*familiar|kids?\s*pool)\b/i.test(text)) {
+    return 'alberca familiar';
+  }
+  if (/\b(infinity\s*pool|alberca\s*infinity|piscina\s*infinity)\b/i.test(text)) {
+    return 'alberca infinity';
+  }
+  if (/\b(alberca\s*principal|piscina\s*principal|main\s*pool)\b/i.test(text)) {
+    return 'alberca principal';
+  }
+
   // Salón + nombre
   const salonMatch = text.match(/sal[oó]n\s+(\w+)/i);
   if (salonMatch) return `Salón ${salonMatch[1]}`;
-  
+
   // "en el/la X" al final
   const enMatch = text.match(/en\s+(?:el\s+|la\s+)?(\w+(?:\s+\w+)?)\s*$/i);
   if (enMatch) return enMatch[1];
-  
-  // Lugares conocidos
+
+  // Genérico
   const knownMatch = text.match(/\b(lobby|recepci[oó]n|alberca|pool|gym|gimnasio|spa|terraza|playa|jard[ií]n|cocina|restaurante|bar|nido|roof|miraflores)\b/i);
   if (knownMatch) return knownMatch[1];
-  
+
   return null;
 }
 
@@ -127,20 +248,15 @@ function extractPlaceFromText(text) {
 function looksLikeNewIncidentWithPlace(text, currentDraft) {
   const t = norm(text);
   
-  // Debe tener algún tipo de lugar (número o nombre)
   const hasPlace = hasPlaceInText(text);
   if (!hasPlace) return false;
   
-  // Debe tener suficiente texto para ser una descripción (>10 chars)
   const textLength = text.trim().length;
   if (textLength < 15) return false;
   
-  // Verificar que el tema sea diferente al draft actual
   if (currentDraft?.descripcion) {
     const currentKeywords = extractKeywords(currentDraft.descripcion);
     const newKeywords = extractKeywords(text);
-    
-    // Si no comparten keywords significativos, es probable que sea nuevo
     const overlap = currentKeywords.filter(k => newKeywords.includes(k));
     
     if (DEBUG) console.log('[DETECT] keyword analysis', {
@@ -152,7 +268,6 @@ function looksLikeNewIncidentWithPlace(text, currentDraft) {
     }
   }
   
-  // Patrones que indican un problema nuevo (no una respuesta de lugar)
   const problemIndicators = [
     /\b(no\s+)?(hay|funciona|sirve|enciende|jala|prende)\b/i,
     /\b(falla|fuga|goteo|roto|rota|da[ñn]ado)\b/i,
@@ -163,15 +278,11 @@ function looksLikeNewIncidentWithPlace(text, currentDraft) {
   
   const hasProblemIndicator = problemIndicators.some(rx => rx.test(t));
   
-  // Si tiene indicador de problema Y el tema es diferente → es nuevo
   if (hasProblemIndicator) {
-    // Verificar que no sea sobre el mismo tema
     if (currentDraft?.descripcion) {
       const currentKeywords = extractKeywords(currentDraft.descripcion);
       const newKeywords = extractKeywords(text);
       const overlap = currentKeywords.filter(k => newKeywords.includes(k));
-      
-      // Si tienen overlap significativo, podría ser una corrección
       if (overlap.length >= 2) return false;
     }
     return true;
@@ -187,7 +298,6 @@ function extractKeywords(text) {
   if (!text) return [];
   const t = norm(text);
   
-  // Palabras a ignorar
   const stopWords = new Set([
     'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas',
     'de', 'del', 'en', 'a', 'al', 'por', 'para', 'con', 'sin',
@@ -224,15 +334,16 @@ function looksLikeValidPlace(text) {
     'jardin', 'terraza', 'palapa',
     'bodega', 'almacen', 'lavanderia', 'laundry',
     'oficina', 'administracion', 'rh', 'contabilidad',
+    'bano', 'baños', 'sanitario', 'sanitarios', 'wc', 'restroom', 'toilet',
+    'locker', 'lockers', 'loker', 'vestidor', 'cambiador',
+    'colaboradores', 'empleados', 'staff', 'colegas',
     'playa', 'beach', 'muelle', 'pier'
   ];
   
-  // Si contiene algún lugar conocido
   if (knownPlaces.some(place => t.includes(place))) return true;
   
   // Patrones de ubicación
   if (/^(en\s+)?(el|la|los|las)\s+\w+$/i.test(t) && t.length < 25) {
-    // "en el lobby", "la alberca" - pero solo si es corto
     return true;
   }
   
@@ -245,13 +356,10 @@ function looksLikeValidPlace(text) {
 
 /**
  * Extrae la corrección de descripción del mensaje
- * "perdón es la impresora" → "la impresora"
- * "no, es el aire" → "el aire"
  */
 function extractCorrectedDescription(text) {
   const t = text.trim();
   
-  // Patrones para extraer la parte relevante
   const extractPatterns = [
     /^(?:perd[oó]n|disculpa|sorry|ups|oops)[,.]?\s*(?:es|era)?\s*(.+)$/i,
     /^(?:no,?\s+)?(?:es|era|ser[ií]a)\s+(.+)$/i,
@@ -285,12 +393,47 @@ async function handleAskPlace(ctx) {
 
   const t = norm(text);
 
+  // ═══════════════════════════════════════════════════════════════
+  // Inicializar contador de intentos para freeform
+  // ═══════════════════════════════════════════════════════════════
+  s._placeAttempts = (s._placeAttempts || 0) + 1;
+  s._lastPlaceAttempt = text;
+
   // Cancelar
   if (/^cancelar?$/i.test(t)) {
+    s._placeAttempts = 0;
+    s._lastPlaceAttempt = null;
     setMode(s, 'confirm');
     const preview = formatPreviewMessage(s.draft);
     await replySafe(msg, '↩️ Cancelado.\n\n' + preview);
     return true;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // Comando "usar" para aceptar lugar freeform
+  // ═══════════════════════════════════════════════════════════════
+  if (/^(usar|acepta|confirma|asi|así)(\s+este|\s+tal\s*cual|\s+como\s*est[aá])?$/i.test(t)) {
+    if (s._lastPlaceAttempt && s._placeAttempts > 1) {
+      // Usar el intento anterior (no el "usar" actual)
+      const previousAttempt = s._previousPlaceAttempt || s._lastPlaceAttempt;
+      const freeformPlace = cleanFreeformPlace(previousAttempt);
+      setDraftField(s, 'lugar', freeformPlace);
+      s._isFreeformPlace = true;  // ✅ Marcar para guardar en catálogo
+      s._placeAttempts = 0;
+      s._lastPlaceAttempt = null;
+      s._previousPlaceAttempt = null;
+
+      if (!s.draft.area_destino && autoAssignArea) {
+        await autoAssignArea(s);
+      }
+
+      return await handlePlaceCompleted(ctx, freeformPlace);
+    }
+  }
+
+  // Guardar intento anterior para el comando "usar"
+  if (s._placeAttempts > 1) {
+    s._previousPlaceAttempt = s._lastPlaceAttempt;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -301,23 +444,16 @@ async function handleAskPlace(ctx) {
   const isProblemDesc = looksLikeProblemDescription(text);
   const isValidPlace = looksLikeValidPlace(text);
   
-  // Pre-check: si tiene indicadores de problema, verificar si también tiene lugar
   let isNewIncidentWithPlace = looksLikeNewIncidentWithPlace(text, s.draft);
   
-  // Si no se detectó como nuevo incidente pero PARECE un problema diferente,
-  // verificar si detectPlace encuentra un lugar
   if (!isNewIncidentWithPlace && isProblemDesc && text.length > 15) {
-    // Verificar si el tema es diferente al draft actual
     const currentKeywords = extractKeywords(s.draft?.descripcion || '');
     const newKeywords = extractKeywords(text);
     const overlap = currentKeywords.filter(k => newKeywords.includes(k));
     
-    // Si no hay overlap (temas diferentes) Y tiene al menos 1 keyword
-    // O si tiene indicadores claros de problema nuevo
     const hasClearProblemIndicator = /\bno\s+hay\b|\bfalla\b|\broto\b|\bfuga\b/i.test(text);
     
     if ((overlap.length === 0 && newKeywords.length >= 1) || (overlap.length === 0 && hasClearProblemIndicator)) {
-      // Es un tema diferente, verificar si tiene lugar con detectPlace
       try {
         const placeCheck = await detectPlace(text, { preferRoomsFirst: true });
         if (placeCheck?.found || placeCheck?.canonical_label) {
@@ -339,17 +475,14 @@ async function handleAskPlace(ctx) {
 
   // ═══════════════════════════════════════════════════════════════
   // CASO 1: Nuevo incidente completo (diferente al actual)
-  // "Me ayudan a quitar los vidrios para revisar la tv en 4405"
   // ═══════════════════════════════════════════════════════════════
   
   if (isNewIncidentWithPlace) {
     if (DEBUG) console.log('[ASK_PLACE] detected new incident with place');
     
-    // Extraer lugar del nuevo mensaje (ahora soporta lugares nombrados)
     const placeSignal = findStrongPlaceSignals ? findStrongPlaceSignals(text) : null;
     let newPlace = placeSignal?.value || extractPlaceFromText(text);
     
-    // Si no encontró lugar con extractPlaceFromText, intentar con detectPlace
     if (!newPlace) {
       try {
         const placeResult = await detectPlace(text, { preferRoomsFirst: true });
@@ -361,7 +494,6 @@ async function handleAskPlace(ctx) {
       }
     }
     
-    // Detectar área del nuevo mensaje
     let newArea = null;
     try {
       const areaResult = await detectArea(text);
@@ -370,34 +502,29 @@ async function handleAskPlace(ctx) {
       if (DEBUG) console.warn('[ASK_PLACE] detectArea error', e?.message);
     }
     
-    // Guardar el ticket actual (incompleto) y el nuevo
     const currentTicket = {
       descripcion: s.draft.descripcion,
       descripcion_original: s.draft.descripcion_original || s.draft.descripcion,
-      lugar: null, // No tiene lugar aún
+      lugar: null,
       area_destino: s.draft.area_destino,
       areas: s.draft.areas || (s.draft.area_destino ? [s.draft.area_destino] : []),
       _ticketNum: 1,
-      _needsPlace: true, // Marcar que necesita lugar
-      // Asociar adjuntos pendientes a este ticket (el que vino con la imagen)
+      _needsPlace: true,
       _pendingMedia: s._pendingMedia || [],
     };
     
-    // Limpiar _pendingMedia de la sesión ya que ahora están en el ticket
     s._pendingMedia = [];
     
     const newTicket = {
-      descripcion: text.replace(/\b\d{3,4}\b/g, '').trim(), // Quitar número de hab
+      descripcion: text.replace(/\b\d{3,4}\b/g, '').trim(),
       descripcion_original: text,
       lugar: newPlace,
       area_destino: newArea || s.draft.area_destino,
       areas: newArea ? [newArea] : (s.draft.area_destino ? [s.draft.area_destino] : []),
       _ticketNum: 2,
-      // El nuevo ticket NO tiene adjuntos (vino solo como texto)
       _pendingMedia: [],
     };
     
-    // Limpiar descripción del nuevo ticket
     if (refreshIncidentDescription) {
       try {
         const cleaned = await ctx.deriveIncidentText?.({ text: newTicket.descripcion });
@@ -409,11 +536,9 @@ async function handleAskPlace(ctx) {
       }
     }
     
-    // Guardar en sesión para decisión
     s._conflictCurrentTicket = currentTicket;
     s._conflictNewTicket = newTicket;
     
-    // Mostrar menú de decisión
     const currentDesc = (currentTicket.descripcion || '').substring(0, 50);
     const newDesc = (newTicket.descripcion || '').substring(0, 50);
     const currentAreaLabel = typeof areaLabel === 'function' ? areaLabel(currentTicket.area_destino) : currentTicket.area_destino;
@@ -442,7 +567,7 @@ async function handleAskPlace(ctx) {
   // CASO 2: Corrección de descripción (no es un lugar)
   // ═══════════════════════════════════════════════════════════════
   
-  if ((isCorrection || isProblemDesc) && !isValidPlace) {
+  if ((isCorrection || isProblemDesc) && !isValidPlace && !looksLikePlaceFreeform(text)) {
     const newDescription = extractCorrectedDescription(text);
     
     if (DEBUG) console.log('[ASK_PLACE] detected correction', { newDescription });
@@ -465,6 +590,8 @@ async function handleAskPlace(ctx) {
     if (refreshIncidentDescription) {
       await refreshIncidentDescription(s, newDescription);
     }
+    
+    s._placeAttempts = 0; // Reset counter
     
     const preview = formatPreviewMessage(s.draft);
     await replySafe(msg,
@@ -496,14 +623,13 @@ async function handleAskPlace(ctx) {
   if (placeResult?.found || placeResult?.canonical_label) {
     const lugar = placeResult.canonical_label || placeResult.label || placeResult.found;
     setDraftField(s, 'lugar', lugar);
+    s._placeAttempts = 0;
+    s._lastPlaceAttempt = null;
     
     if (!s.draft.area_destino && autoAssignArea) {
       await autoAssignArea(s);
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // VERIFICAR SI ESTAMOS COMPLETANDO MÚLTIPLES TICKETS
-    // ═══════════════════════════════════════════════════════════════
     return await handlePlaceCompleted(ctx, lugar);
   }
 
@@ -530,13 +656,16 @@ async function handleAskPlace(ctx) {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // CASO 4: No encontró en catálogo - verificar si parece lugar
+  // CASO 4: No encontró en catálogo - verificar si parece lugar válido
   // ═══════════════════════════════════════════════════════════════
   
   if (isValidPlace) {
     const result = await normalizeAndSetLugar(s, msg, text, { rawText: text, strictMode: true });
     
     if (result?.success && s.draft.lugar) {
+      s._placeAttempts = 0;
+      s._lastPlaceAttempt = null;
+      
       if (!s.draft.area_destino && autoAssignArea) {
         await autoAssignArea(s);
       }
@@ -546,27 +675,76 @@ async function handleAskPlace(ctx) {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // CASO 5: No parece lugar - mostrar ayuda
+  // ✅ CASO 5: FREEFORM - Si el texto suena a lugar, aceptarlo
+  // ═══════════════════════════════════════════════════════════════
+  
+  const textLooksLikePlace = looksLikePlaceFreeform(text);
+  const multipleAttempts = s._placeAttempts >= 2;
+
+  if (DEBUG) {
+    console.log('[ASK_PLACE] freeform evaluation', {
+      text,
+      looksLikePlace: textLooksLikePlace,
+      attempts: s._placeAttempts,
+      willAcceptFreeform: textLooksLikePlace
+    });
+  }
+
+  // Si el texto claramente suena a lugar → aceptar como freeform
+  if (textLooksLikePlace) {
+    const freeformPlace = cleanFreeformPlace(text);
+    setDraftField(s, 'lugar', freeformPlace);
+    s._isFreeformPlace = true;  // ✅ Marcar para guardar en catálogo
+    s._placeAttempts = 0;
+    s._lastPlaceAttempt = null;
+
+    if (!s.draft.area_destino && autoAssignArea) {
+      await autoAssignArea(s);
+    }
+
+    if (DEBUG) console.log('[ASK_PLACE] accepted freeform place', { freeformPlace });
+
+    return await handlePlaceCompleted(ctx, freeformPlace, true);
+  }
+
+  // Múltiples intentos → ofrecer opción de usar tal cual
+  if (multipleAttempts) {
+    const freeformPlace = cleanFreeformPlace(text);
+    
+    await replySafe(msg,
+      `❓ No reconozco "*${text}*" en el catálogo.\n\n` +
+      `¿Qué quieres hacer?\n` +
+      `• Escribe *usar* para usar "*${freeformPlace}*" tal cual\n` +
+      `• O escribe otro lugar diferente\n\n` +
+      `_Ejemplos: "lobby", "hab 1205", "baños de empleados"_`
+    );
+    return true;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // CASO 6: Primer intento sin reconocer - mostrar ayuda
   // ═══════════════════════════════════════════════════════════════
   
   await replySafe(msg,
-    '❓ No reconocí eso como un lugar.\n\n' +
+    '❓ No reconocí ese lugar.\n\n' +
     'Por favor indica *dónde* está el problema:\n' +
     '• Habitación: "hab 1205" o solo "1205"\n' +
     '• Área común: "lobby", "alberca", "gym"\n' +
-    '• Otro: "restaurante", "estacionamiento"\n\n' +
-    '_Si quieres corregir la descripción, escribe "editar" o "cambiar descripción"._'
+    '• Específico: "baños de colegas", "cocina principal"\n\n' +
+    '_Si el lugar no está en la lista, escríbelo de nuevo y lo acepto._'
   );
   return true;
 }
 
 /**
  * Helper: Maneja cuando se completa un lugar
- * Si hay múltiples tickets pendientes, actualiza el array y muestra menú
- * También verifica si falta área destino
+ * @param {boolean} isFreeform - Si el lugar fue aceptado como freeform
  */
-async function handlePlaceCompleted(ctx, lugar) {
+async function handlePlaceCompleted(ctx, lugar, isFreeform = false) {
   const { s, msg, replySafe, setMode, areaLabel, autoAssignArea } = ctx;
+  
+  // Mensaje adicional si fue freeform
+  const freeformNote = isFreeform ? '\n_(Lugar no catalogado, aceptado tal cual)_' : '';
   
   // Verificar si estamos completando uno de múltiples tickets
   if (s._completingMultipleTicket !== undefined && Array.isArray(s._multipleTickets)) {
@@ -574,27 +752,20 @@ async function handlePlaceCompleted(ctx, lugar) {
     
     if (DEBUG) console.log('[ASK_PLACE] completing multiple ticket', { idx, lugar });
     
-    // Actualizar el ticket en el array
     if (s._multipleTickets[idx]) {
       s._multipleTickets[idx].lugar = lugar;
       s._multipleTickets[idx]._needsPlace = false;
       
-      // ═══════════════════════════════════════════════════════════════
-      // VERIFICAR SI FALTA ÁREA DESTINO
-      // ═══════════════════════════════════════════════════════════════
       if (!s._multipleTickets[idx].area_destino) {
-        // Marcar que necesita área
         s._multipleTickets[idx]._needsArea = true;
         s._completingMultipleTicketArea = idx;
-        
-        // Limpiar flag de lugar
         s._completingMultipleTicket = undefined;
         
         const ticket = s._multipleTickets[idx];
         const desc = (ticket.descripcion || '').substring(0, 50);
         
         await replySafe(msg,
-          `✅ Lugar registrado: *${lugar}*\n\n` +
+          `✅ Lugar registrado: *${lugar}*${freeformNote}\n\n` +
           `📋 Ticket ${idx + 1}: _"${desc}..."_\n\n` +
           `🏷️ Falta el *área destino*. ¿A qué área va?\n\n` +
           '• *MAN* — Mantenimiento\n' +
@@ -609,16 +780,13 @@ async function handlePlaceCompleted(ctx, lugar) {
       }
     }
     
-    // Limpiar flag
     s._completingMultipleTicket = undefined;
     
-    // Verificar si hay tickets sin datos completos
     const ticketsNeedingData = s._multipleTickets.filter(t => 
       !t.lugar || !t.area_destino
     );
     
     if (ticketsNeedingData.length > 0) {
-      // Hay tickets incompletos, buscar el primero que necesite algo
       const incompleteIdx = s._multipleTickets.findIndex(t => !t.lugar || !t.area_destino);
       const incompleteTicket = s._multipleTickets[incompleteIdx];
       
@@ -627,7 +795,7 @@ async function handlePlaceCompleted(ctx, lugar) {
         s.draft = { ...incompleteTicket };
         
         await replySafe(msg,
-          `✅ Ticket ${idx + 1} actualizado.\n\n` +
+          `✅ Ticket ${idx + 1} actualizado.${freeformNote}\n\n` +
           `📍 Ahora necesito el *lugar* del ticket ${incompleteIdx + 1}:\n` +
           `   _"${(incompleteTicket.descripcion || '').substring(0, 50)}..."_`
         );
@@ -640,7 +808,7 @@ async function handlePlaceCompleted(ctx, lugar) {
         s._completingMultipleTicketArea = incompleteIdx;
         
         await replySafe(msg,
-          `✅ Ticket ${idx + 1} actualizado.\n\n` +
+          `✅ Ticket ${idx + 1} actualizado.${freeformNote}\n\n` +
           `🏷️ Falta el *área* del ticket ${incompleteIdx + 1}:\n` +
           `   _"${(incompleteTicket.descripcion || '').substring(0, 50)}..."_\n\n` +
           '• *MAN* — Mantenimiento\n' +
@@ -655,26 +823,22 @@ async function handlePlaceCompleted(ctx, lugar) {
       }
     }
     
-    // Todos los tickets están completos, mostrar resumen
-    return await showMultipleTicketsSummary(ctx, `✅ Lugar registrado para ticket ${idx + 1}.`);
+    return await showMultipleTicketsSummary(ctx, `✅ Lugar registrado para ticket ${idx + 1}.${freeformNote}`);
   }
   
   // ═══════════════════════════════════════════════════════════════
   // Flujo normal: ticket único
   // ═══════════════════════════════════════════════════════════════
   
-  // Verificar si falta área destino
   if (!s.draft.area_destino) {
-    // Intentar auto-asignar primero
     if (autoAssignArea) {
       await autoAssignArea(s);
     }
     
-    // Si sigue sin área, preguntar
     if (!s.draft.area_destino) {
       const preview = formatPreviewMessage(s.draft);
       await replySafe(msg,
-        '✅ Lugar registrado.\n\n' +
+        `✅ Lugar registrado: *${lugar}*${freeformNote}\n\n` +
         preview + '\n\n' +
         '🏷️ Falta el *área destino*. ¿A cuál va?\n\n' +
         '• *MAN* — Mantenimiento\n' +
@@ -689,11 +853,10 @@ async function handlePlaceCompleted(ctx, lugar) {
     }
   }
   
-  // Todo completo, ir a confirmación
   setMode(s, 'confirm');
   const preview = formatPreviewMessage(s.draft);
   await replySafe(msg, 
-    '✅ Lugar registrado:\n\n' + 
+    `✅ Lugar registrado: *${lugar}*${freeformNote}\n\n` + 
     preview + '\n\n' +
     '_Responde *sí* para enviar o *editar* para modificar._'
   );
@@ -747,7 +910,6 @@ async function showMultipleTicketsSummary(ctx, headerMsg = '') {
 
 /**
  * Handler para modo ask_place_conflict
- * Cuando se detecta un nuevo incidente mientras estamos pidiendo lugar
  */
 async function handleAskPlaceConflict(ctx) {
   const {
@@ -763,7 +925,6 @@ async function handleAskPlaceConflict(ctx) {
   const newTicket = s._conflictNewTicket;
 
   if (!currentTicket || !newTicket) {
-    // Estado inválido, volver a ask_place
     setMode(s, 'ask_place');
     await replySafe(msg, '⚠️ Error interno. Por favor indica el lugar del problema.');
     return true;
@@ -771,14 +932,9 @@ async function handleAskPlaceConflict(ctx) {
 
   // Opción 1: Crear ambos tickets
   if (/^1\b/.test(t) || /^ambos\b/i.test(t) || /^los\s*dos\b/i.test(t)) {
-    // Guardar ambos tickets para envío múltiple
     s._multipleTickets = [currentTicket, newTicket];
-    
-    // Limpiar estado de conflicto
     s._conflictCurrentTicket = null;
     s._conflictNewTicket = null;
-    
-    // El primer ticket necesita lugar, así que lo ponemos en el draft
     s.draft = { ...currentTicket };
     
     await replySafe(msg,
@@ -788,15 +944,14 @@ async function handleAskPlaceConflict(ctx) {
       'Escribe el lugar (ej: "hab 1205", "lobby"):'
     );
     
-    // Guardar flag para saber que estamos completando ticket 1 de múltiples
     s._completingMultipleTicket = 0;
+    s._placeAttempts = 0;
     setMode(s, 'ask_place');
     return true;
   }
 
   // Opción 2: Reemplazar por el nuevo
   if (/^2\b/.test(t) || /^reemplaz[ao]r?\b/i.test(t) || /^nuevo\b/i.test(t)) {
-    // Usar el nuevo ticket como draft
     s.draft = {
       descripcion: newTicket.descripcion,
       descripcion_original: newTicket.descripcion_original,
@@ -805,7 +960,6 @@ async function handleAskPlaceConflict(ctx) {
       areas: newTicket.areas,
     };
     
-    // Limpiar estado de conflicto
     s._conflictCurrentTicket = null;
     s._conflictNewTicket = null;
     
@@ -817,7 +971,6 @@ async function handleAskPlaceConflict(ctx) {
 
   // Opción 3: Descartar el nuevo
   if (/^3\b/.test(t) || /^descartar?\b/i.test(t) || /^actual\b/i.test(t) || /^continuar?\b/i.test(t)) {
-    // Mantener el ticket actual
     s.draft = {
       descripcion: currentTicket.descripcion,
       descripcion_original: currentTicket.descripcion_original,
@@ -826,7 +979,6 @@ async function handleAskPlaceConflict(ctx) {
       areas: currentTicket.areas,
     };
     
-    // Limpiar estado de conflicto
     s._conflictCurrentTicket = null;
     s._conflictNewTicket = null;
     
@@ -836,6 +988,7 @@ async function handleAskPlaceConflict(ctx) {
       preview + '\n\n' +
       '📍 Indícame el *lugar* del problema:'
     );
+    s._placeAttempts = 0;
     setMode(s, 'ask_place');
     return true;
   }
@@ -849,7 +1002,6 @@ async function handleAskPlaceConflict(ctx) {
     return true;
   }
 
-  // No entendí - mostrar opciones de nuevo
   const currentAreaLabel = typeof areaLabel === 'function' ? areaLabel(currentTicket.area_destino) : currentTicket.area_destino;
   const newAreaLabel = typeof areaLabel === 'function' ? areaLabel(newTicket.area_destino) : newTicket.area_destino;
   
@@ -864,7 +1016,7 @@ async function handleAskPlaceConflict(ctx) {
 }
 
 /**
- * Extrae códigos de área de un texto (igual que dialogInterpreter)
+ * Extrae códigos de área de un texto
  */
 function extractAreasFromText(text) {
   const t = norm(text);
@@ -883,7 +1035,6 @@ function extractAreasFromText(text) {
 
 /**
  * Handler para modo ask_area_multiple
- * Cuando falta área en uno de los múltiples tickets
  */
 async function handleAskAreaMultiple(ctx) {
   const { s, msg, text, replySafe, setMode, areaLabel, normalizeAreaCode } = ctx;
@@ -900,24 +1051,20 @@ async function handleAskAreaMultiple(ctx) {
     return await showMultipleTicketsSummary(ctx);
   }
   
-  // Cancelar
   if (/^cancelar$/i.test(t)) {
     s._completingMultipleTicketArea = undefined;
     return await showMultipleTicketsSummary(ctx, '↩️ Cancelado.');
   }
   
-  // Extraer áreas del texto (usa la misma lógica que dialogInterpreter)
   const VALID_AREAS = new Set(['RS', 'AMA', 'MAN', 'IT', 'SEG']);
   const extractedAreas = extractAreasFromText(text);
   
   let area = null;
   
-  // Si encontró área(s) en el texto
   if (extractedAreas.length > 0) {
-    area = extractedAreas[0]; // Tomar la primera
+    area = extractedAreas[0];
   }
   
-  // Fallback: intentar con normalizeAreaCode si existe
   if (!area && typeof normalizeAreaCode === 'function') {
     const normalized = normalizeAreaCode(text);
     if (normalized && VALID_AREAS.has(normalized.toUpperCase())) {
@@ -927,14 +1074,12 @@ async function handleAskAreaMultiple(ctx) {
   
   if (DEBUG) console.log('[ASK_AREA_MULTIPLE] extraction', { text, extractedAreas, area });
   
-  // Verificar si es válida
   if (area && VALID_AREAS.has(area)) {
     s._multipleTickets[idx].area_destino = area;
     s._multipleTickets[idx].areas = [area];
     s._multipleTickets[idx]._needsArea = false;
     s._completingMultipleTicketArea = undefined;
     
-    // Verificar si hay más tickets incompletos
     const nextIncomplete = s._multipleTickets.findIndex((t, i) => 
       i !== idx && (!t.lugar || !t.area_destino)
     );
@@ -945,6 +1090,7 @@ async function handleAskAreaMultiple(ctx) {
       if (!ticket.lugar) {
         s._completingMultipleTicket = nextIncomplete;
         s.draft = { ...ticket };
+        s._placeAttempts = 0;
         
         await replySafe(msg,
           `✅ Área asignada: *${typeof areaLabel === 'function' ? areaLabel(area) : area}*\n\n` +
@@ -970,16 +1116,14 @@ async function handleAskAreaMultiple(ctx) {
           '• *SEG* — Seguridad'
         );
         
-        return true; // Mantener en ask_area_multiple
+        return true;
       }
     }
     
-    // Todos completos, mostrar resumen
     const areaLbl = typeof areaLabel === 'function' ? areaLabel(area) : area;
     return await showMultipleTicketsSummary(ctx, `✅ Área asignada: *${areaLbl}*`);
   }
   
-  // Área no válida
   await replySafe(msg,
     '❓ No reconocí esa área.\n\n' +
     'Indica el área destino:\n' +
@@ -994,7 +1138,6 @@ async function handleAskAreaMultiple(ctx) {
 
 /**
  * Handler para modo choose_area_single
- * Cuando falta área en un ticket único
  */
 async function handleChooseAreaSingle(ctx) {
   const { s, msg, text, replySafe, setMode, setDraftField, areaLabel, normalizeAreaCode } = ctx;
@@ -1003,7 +1146,6 @@ async function handleChooseAreaSingle(ctx) {
   
   if (DEBUG) console.log('[CHOOSE_AREA_SINGLE] handling', { response: text });
   
-  // Cancelar
   if (/^cancelar$/i.test(t)) {
     setMode(s, 'confirm');
     const preview = formatPreviewMessage(s.draft);
@@ -1011,7 +1153,6 @@ async function handleChooseAreaSingle(ctx) {
     return true;
   }
   
-  // Extraer áreas del texto
   const VALID_AREAS = new Set(['RS', 'AMA', 'MAN', 'IT', 'SEG']);
   const extractedAreas = extractAreasFromText(text);
   
@@ -1021,7 +1162,6 @@ async function handleChooseAreaSingle(ctx) {
     area = extractedAreas[0];
   }
   
-  // Fallback con normalizeAreaCode
   if (!area && typeof normalizeAreaCode === 'function') {
     const normalized = normalizeAreaCode(text);
     if (normalized && VALID_AREAS.has(normalized.toUpperCase())) {
@@ -1070,6 +1210,8 @@ async function handlePlaceSelection(ctx) {
   switch (s.mode) {
     case 'ask_place':
       return handleAskPlace(ctx);
+    case 'choose_place_from_candidates':
+      return handleChoosePlaceFromCandidates(ctx);
     case 'ask_place_conflict':
       return handleAskPlaceConflict(ctx);
     case 'ask_area_multiple':
@@ -1081,4 +1223,147 @@ async function handlePlaceSelection(ctx) {
   }
 }
 
-module.exports = { handlePlaceSelection, handlePlaceCompleted };
+/**
+ * Handler para modo choose_place_from_candidates
+ */
+async function handleChoosePlaceFromCandidates(ctx) {
+  const {
+    s, msg, text, replySafe, setMode, setDraftField,
+    normalizeAndSetLugar, autoAssignArea, refreshIncidentDescription
+  } = ctx;
+
+  const candidates = s._placeCandidates || [];
+  const t = norm(text);
+
+  if (DEBUG) console.log('[CHOOSE_PLACE] handling', { response: text, candidates: candidates.length });
+
+  // Cancelar / ninguno → permitir escribir manualmente
+  if (/^(cancelar?|ninguno|otro|manual)$/i.test(t)) {
+    s._placeCandidates = [];
+    s._placeAttempts = 0;
+    setMode(s, 'ask_place');
+    await replySafe(msg, '📍 Escribe el lugar manualmente:');
+    return true;
+  }
+
+  // ✅ "usar" el texto anterior tal cual
+  if (/^usar$/i.test(t) && s._lastPlaceAttempt) {
+    const freeformPlace = cleanFreeformPlace(s._lastPlaceAttempt);
+    setDraftField(s, 'lugar', freeformPlace);
+    s._isFreeformPlace = true;  // ✅ Marcar para guardar en catálogo
+    s._placeCandidates = [];
+    s._placeAttempts = 0;
+    s._lastPlaceAttempt = null;
+
+    if (!s.draft.area_destino && autoAssignArea) {
+      await autoAssignArea(s);
+    }
+
+    return await handlePlaceCompleted(ctx, freeformPlace, true);
+  }
+
+  // Selección por número
+  const numMatch = t.match(/^(\d+)/);
+  if (numMatch) {
+    const idx = parseInt(numMatch[1], 10) - 1;
+    if (idx >= 0 && idx < candidates.length) {
+      const selected = candidates[idx];
+      const placeValue = selected.label || selected.value || selected;
+
+      setDraftField(s, 'lugar', placeValue);
+      s._placeCandidates = [];
+      s._placeAttempts = 0;
+      s._lastPlaceAttempt = null;
+
+      if (!s.draft.area_destino && autoAssignArea) {
+        await autoAssignArea(s);
+      }
+
+      if (refreshIncidentDescription && s.draft.descripcion) {
+        await refreshIncidentDescription(s, s.draft.descripcion);
+      }
+
+      return await handlePlaceCompleted(ctx, placeValue);
+    }
+  }
+
+  // Selección por texto (buscar coincidencia parcial)
+  const match = candidates.find(c => {
+    const val = norm(c.label || c.value || c);
+    return val.includes(t) || t.includes(val);
+  });
+
+  if (match) {
+    const placeValue = match.label || match.value || match;
+    setDraftField(s, 'lugar', placeValue);
+    s._placeCandidates = [];
+    s._placeAttempts = 0;
+    s._lastPlaceAttempt = null;
+
+    if (!s.draft.area_destino && autoAssignArea) {
+      await autoAssignArea(s);
+    }
+
+    if (refreshIncidentDescription && s.draft.descripcion) {
+      await refreshIncidentDescription(s, s.draft.descripcion);
+    }
+
+    return await handlePlaceCompleted(ctx, placeValue);
+  }
+
+  // ✅ Si el nuevo texto suena a lugar, aceptarlo como freeform
+  if (looksLikePlaceFreeform(text)) {
+    const freeformPlace = cleanFreeformPlace(text);
+    setDraftField(s, 'lugar', freeformPlace);
+    s._isFreeformPlace = true;  // ✅ Marcar para guardar en catálogo
+    s._placeCandidates = [];
+    s._placeAttempts = 0;
+    s._lastPlaceAttempt = null;
+
+    if (!s.draft.area_destino && autoAssignArea) {
+      await autoAssignArea(s);
+    }
+
+    return await handlePlaceCompleted(ctx, freeformPlace, true);
+  }
+
+  // Intentar buscar de nuevo en catálogo
+  const newResult = await normalizeAndSetLugar(s, msg, text, { rawText: text });
+  if (newResult?.success && s.draft.lugar) {
+    s._placeCandidates = [];
+    s._placeAttempts = 0;
+    s._lastPlaceAttempt = null;
+
+    if (!s.draft.area_destino && autoAssignArea) {
+      await autoAssignArea(s);
+    }
+
+    if (refreshIncidentDescription && s.draft.descripcion) {
+      await refreshIncidentDescription(s, s.draft.descripcion);
+    }
+
+    return await handlePlaceCompleted(ctx, s.draft.lugar);
+  }
+
+  // Mostrar opciones de nuevo + opción de usar texto anterior
+  let options = '📍 Elige un lugar:\n\n';
+  candidates.forEach((c, i) => {
+    const label = c.label || c.value || c;
+    options += `*${i + 1}.* ${label}\n`;
+  });
+  options += '\n• *otro* — escribir manualmente';
+  
+  if (s._lastPlaceAttempt) {
+    options += `\n• *usar* — usar "${s._lastPlaceAttempt}" tal cual`;
+  }
+
+  await replySafe(msg, options);
+  return true;
+}
+
+module.exports = { 
+  handlePlaceSelection, 
+  handlePlaceCompleted,
+  looksLikePlaceFreeform,
+  cleanFreeformPlace
+};

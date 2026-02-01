@@ -1,4 +1,12 @@
 {
+  "name": "insignia-vicebot",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
   "dependencies": {
     "better-sqlite3": "^12.5.0",
     "dotenv": "^17.2.3",
@@ -6,9 +14,12 @@
     "express": "^5.2.1",
     "moment-timezone": "^0.6.0",
     "openai": "^6.15.0",
-    "puppeteer": "^24.34.0",
+    "puppeteer": "^24.35.0",
     "qrcode-terminal": "^0.12.0",
     "uuid": "^13.0.0",
-    "whatsapp-web.js": "^1.34.2"
+    "whatsapp-web.js": "github:timothydillan/whatsapp-web.js#fix/duplicate-events-and-bindings"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

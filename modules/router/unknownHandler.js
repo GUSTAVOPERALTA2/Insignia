@@ -14,7 +14,7 @@ try {
 
 let safeReply = null;
 try {
-  ({ safeReply } = require('../utils/safeReply'));
+  ({ safeReply } = require('../core/safeReply'));
 } catch (e) {
   safeReply = null;
   if (DEBUG) console.warn('[UNKNOWN] safeReply missing:', e?.message || e);

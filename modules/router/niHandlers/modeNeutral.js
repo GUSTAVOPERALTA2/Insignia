@@ -6,6 +6,10 @@
  * - Hereda lugar entre fragmentos
  * - Crea s._multipleTickets con borradores completos y delega la presentación
  *   del menú al handler `multiple_tickets`
+ *
+ * ✅ FIX 2026-01:
+ *   Si llega MEDIA + TEXTO (caption/body), NO regresar temprano a handleMediaInNeutral.
+ *   Priorizar el texto y solo tratar como "media-only" cuando NO hay texto.
  */
 
 const {
@@ -65,6 +69,69 @@ function splitMultipleProblemsHeuristic(text) {
   if (!text || typeof text !== 'string') return [];
 
   // -------------------------
+  // 0) Helpers extra: filtrar saludos / pegar continuaciones
+  // -------------------------
+  const isGreetingLine = (s) => {
+    const t = String(s || '').trim().toLowerCase();
+    if (!t) return true;
+
+    // "hola", "hola team", "buenos días", "equipo", etc.
+    const rx = /^(hola|hey|buen(as|os)\s+(d(i|í)as|tardes|noches)|equipo|team|hola\s+team|hola\s+equipo)[\s!,.:-]*$/i;
+    if (rx.test(t)) return true;
+
+    // saludos muy cortos (sin señal de problema)
+    if (t.length <= 10 && !hasProblemSignal(t)) return true;
+
+    return false;
+  };
+
+  const isListMarkerLine = (s) => {
+    const t = String(s || '').trim();
+    return /^([-•*]|(\d+[\)\.]))\s+/.test(t);
+  };
+
+  const shouldTreatNewlineAsSeparator = (original) => {
+    // Si hay bullets o enumeración, sí separa por líneas.
+    const lines = String(original || '').split(/\n+/).map(x => x.trim()).filter(Boolean);
+    if (lines.some(isListMarkerLine)) return true;
+
+    // Si hay conectores fuertes explícitos, sí.
+    if (/\b(adem[aá]s|y\s+tambi[eé]n|por\s+otro\s+lado|otra\s+cosa)\b/i.test(original)) return true;
+
+    // Si no, NO uses \n como separador fuerte (evita "Hola\nProblema\nDetalle")
+    return false;
+  };
+
+  const mergeContinuations = (arr) => {
+    const out = [];
+    for (const piece of arr) {
+      const p = String(piece || '').trim();
+      if (!p) continue;
+
+      // eliminar saludos sueltos
+      if (isGreetingLine(p)) continue;
+
+      // si este fragmento NO trae señal clara de incidente,
+      // y el anterior sí, probablemente es continuación -> pegar
+      const prev = out[out.length - 1];
+      if (prev && hasProblemSignal(prev) && !hasProblemSignal(p)) {
+        out[out.length - 1] = `${prev} ${p}`.trim();
+        continue;
+      }
+
+      // Heurística: "No se..." / "No hay..." / "No funciona..." suele ser continuación
+      // si el fragmento anterior ya menciona el objeto (TV, AC, etc.)
+      if (prev && /^no\s+(se|hay|funciona|sirve|prende|enciende|sale|llega)\b/i.test(p)) {
+        out[out.length - 1] = `${prev} ${p}`.trim();
+        continue;
+      }
+
+      out.push(p);
+    }
+    return out;
+  };
+
+  // -------------------------
   // 1) Proteger patrones ":" que NO deben dividir
   // -------------------------
   const protect = (s) => {
@@ -98,56 +165,46 @@ function splitMultipleProblemsHeuristic(text) {
   // 2) Helpers de “smart y”
   // -------------------------
   const stripCourtesy = (s) => {
-    // quita coletillas típicas que NO deben crear tickets
     return (s || '')
       .replace(/\b(por\s+favor|pls|porfa|gracias|grax|ok|vale|de\s+favor)\b\.?$/i, '')
       .replace(/\s{2,}/g, ' ')
       .trim();
   };
 
-  const hasProblemSignal = (s) => {
+  function hasProblemSignal(s) {
     const t = (s || '').toLowerCase();
 
-    // verbos / estructuras de incidente
     const verbish =
       /\b(no\s+funciona|no\s+sirve|no\s+prende|no\s+enciende|no\s+hay|no\s+sale|no\s+llega|se\s+rompi[oó]|se\s+descompuso|se\s+cay[oó]|se\s+ator[oó]|se\s+tap[oó]|gotea|fuga|huele|ruido|vibra|tir[aá]\s+agua|se\s+inund[aá]|error|fall[aó])\b/i;
 
-    // solicitudes explícitas
     const request =
       /\b(solicita|solicito|necesito|necesitamos|requiero|requerimos|manden|enviar|traer|apoy(o|o\w*)|ayuda)\b/i;
 
-    // “cosas problema” (sustantivos típicos de reporte)
     const nouns =
-      /\b(limpieza|toallas?|s[aá]banas?|amenidades|basura|mantenimiento|aire\s+acondicionado|clima|agua\s+caliente|agua\s+fr[ií]a|regadera|ba[nñ]o|wc|inodoro|lavabo|drenaje|internet|wifi|tv|tel[eé]fono|llave|puerta|luz|foco|contacto|cortina|coladera)\b/i;
+      /\b(limpieza|toallas?|s[aá]banas?|amenidades|basura|mantenimiento|aire\s+acondicionado|clima|agua\s+caliente|agua\s+fr[ií]a|regadera|ba[nñ]o|wc|inodoro|lavabo|drenaje|internet|wifi|tv|tel[eé]fono|llave|puerta|luz|foco|contacto|cortina|coladera|canales?)\b/i;
 
     return verbish.test(t) || request.test(t) || nouns.test(t);
-  };
+  }
 
   const looksLikeListJoin = (left, right) => {
-    // Evitar dividir cuando es claramente una lista de sustantivos del MISMO asunto
     const tL = (left || '').toLowerCase();
     const tR = (right || '').toLowerCase();
 
-    // si ambos son cortos y sin verbos fuertes → probablemente lista
     const shortish = (s) => (s.trim().length <= 22);
 
-    // si ninguno trae señal de problema → no dividir
     if (!hasProblemSignal(tL) && !hasProblemSignal(tR)) return true;
 
-    // casos típicos “X y Y” dentro del mismo reporte
     const sameTopicPairs = [
       /\b(toallas?|s[aá]banas?|amenidades)\b/,
       /\b(ba[nñ]o|regadera|wc|inodoro|lavabo|drenaje|coladera)\b/,
       /\b(luz|foco|contacto)\b/,
-      /\b(internet|wifi|tv|tel[eé]fono)\b/,
+      /\b(internet|wifi|tv|tel[eé]fono|canales?)\b/,
       /\b(puerta|llave|cerradura)\b/,
     ];
 
     const sharesTopic = sameTopicPairs.some((rx) => rx.test(tL) && rx.test(tR));
 
     if (sharesTopic && shortish(left) && shortish(right)) return true;
-
-    // “por favor / gracias” del lado derecho
     if (/^(por\s+favor|gracias|ok|vale)\b/i.test(tR)) return true;
 
     return false;
@@ -157,11 +214,9 @@ function splitMultipleProblemsHeuristic(text) {
     const base = stripCourtesy(chunk);
     if (!base) return [];
 
-    // split tentativo
     const pieces = base.split(/\s+y\s+/i).map(p => stripCourtesy(p)).filter(Boolean);
     if (pieces.length <= 1) return [restore(base, TIME_TOKEN, IPPORT_TOKEN)];
 
-    // reconstruir con decisión “smart”
     const out = [];
     let acc = pieces[0];
 
@@ -174,14 +229,12 @@ function splitMultipleProblemsHeuristic(text) {
       const leftOk = left.length >= 8 && hasProblemSignal(left);
       const rightOk = right.length >= 8 && hasProblemSignal(right);
 
-      // regla: separar si ambos lados parecen incidentes
       const shouldSplit = (leftOk && rightOk) && !looksLikeListJoin(left, right);
 
       if (shouldSplit) {
         out.push(restore(left, TIME_TOKEN, IPPORT_TOKEN));
         acc = right;
       } else {
-        // no separar: pegamos de vuelta con " y "
         acc = `${acc} y ${right}`.trim();
       }
     }
@@ -191,17 +244,26 @@ function splitMultipleProblemsHeuristic(text) {
   };
 
   // -------------------------
-  // 3) Separación “fuerte” primero (sin usar "y" directo)
+  // 3) Separación “fuerte”
+  //    ✅ IMPORTANTE: no partir por \n a menos que sea lista/conectores fuertes
   // -------------------------
   const strongSeps = [
     /\b(?:y\s+tambi[eé]n|adem[aá]s|tamb[ií]en\s+hay|y\s+adem[aá]s|y\s+otra\s+cosa|otra\s+cosa|adem[aá]s\s+de)\b/gi,
     /;\s*/g,
     /:\s*/g,          // ":" ya protegido para horas/ip:puerto
-    /\n+/g,
     /\s*•\s+/g,
   ];
 
   let parts = [protectedText];
+
+  // separar por saltos de línea SOLO si aplica
+  if (shouldTreatNewlineAsSeparator(text)) {
+    parts = parts.flatMap(p => p.split(/\n+/g));
+  } else {
+    // si NO, convertimos \n en espacio para que "Hola\nProblema\nDetalle" sea 1 sola cosa
+    parts = [protectedText.replace(/\n+/g, ' ')];
+  }
+
   for (const sep of strongSeps) {
     parts = parts.flatMap(p => p.split(sep));
   }
@@ -211,7 +273,7 @@ function splitMultipleProblemsHeuristic(text) {
   // -------------------------
   const ignore = new Set(['y', 'tambien', 'hay', 'una', 'un', 'otra', 'cosa', 'ademas']);
 
-  return parts
+  let out = parts
     .flatMap(p => smartSplitByY(p))
     .map(p => p.trim())
     .filter(p => {
@@ -219,6 +281,12 @@ function splitMultipleProblemsHeuristic(text) {
       return clean.length > 4 && !ignore.has(clean);
     })
     .map(p => p.replace(/^[y,\s. ]+/i, '').trim());
+
+  // ✅ NUEVO: filtrar saludos y pegar continuaciones
+  out = mergeContinuations(out);
+
+  // ✅ Seguridad final: si después de limpiar quedó 0 o 1, retornar tal cual
+  return out;
 }
 
 /**
@@ -244,32 +312,46 @@ function normalizeAiIncidents(aiResp, fallbackText) {
  */
 async function handleNeutralMode(ctx) {
   const {
-    s, msg, text, replySafe, setMode, setDraftField, addArea,
+    s, msg, text, replySafe, setMode,
     detectArea, findStrongPlaceSignals, normalizeAndSetLugar,
     refreshIncidentDescription, autoAssignArea, deriveIncidentText,
   } = ctx;
 
+  const t = (text || '').trim();
+  const hasText = t.length > 0;
+  const hasMedia = !!msg?.hasMedia;
+
   if (DEBUG) console.log('[NEUTRAL] processing', {
-    hasText: !!text,
-    hasMedia: msg?.hasMedia,
+    hasText,
+    hasMedia,
     mode: s.mode
   });
 
-  // Media first (delegamos a una función separada)
-  if (msg?.hasMedia) {
-    return handleMediaInNeutral(ctx);
+  // ✅ FIX: si hay media, primero asegura batch (adjuntos),
+  // pero SOLO trata como "media-only" cuando NO hay texto.
+  if (hasMedia) {
+    if (typeof ensureMediaBatch === 'function') {
+      try { await ensureMediaBatch(s, msg); }
+      catch (e) { if (DEBUG) console.warn('[NEUTRAL] ensureMediaBatch err', e?.message); }
+    }
+
+    if (!hasText) {
+      // media sin texto => pedir descripción
+      return handleMediaInNeutral(ctx);
+    }
+    // si hay texto, seguimos al flujo normal (NO return)
   }
 
-  if (!text) return false;
+  if (!hasText) return false;
 
   // Si sesión vacía, aplicar guardes y tips
   if (isSessionBareForNI(s)) {
     if (ctx.classifyNiGuard) {
       try {
-        const guardResult = await ctx.classifyNiGuard(text);
+        const guardResult = await ctx.classifyNiGuard(t);
         if (guardResult?.isNotIncident) {
-          if (DEBUG) console.log('[NEUTRAL] guard: not an incident', { text });
-          const response = ctx.generateContextualResponse ? await ctx.generateContextualResponse(text) : null;
+          if (DEBUG) console.log('[NEUTRAL] guard: not an incident', { text: t });
+          const response = ctx.generateContextualResponse ? await ctx.generateContextualResponse(t) : null;
           if (response) {
             await replySafe(msg, response);
             return true;
@@ -286,7 +368,7 @@ async function handleNeutralMode(ctx) {
       }
     }
 
-    if (isVagueText(text)) {
+    if (isVagueText(t)) {
       await replySafe(msg,
         '👋 Para reportar, dime:\n• *Qué* problema hay\n• *Dónde* está (ej: hab 1205)\n\n' +
         'Ejemplo: "No funciona el aire en hab 1205"'
@@ -300,8 +382,8 @@ async function handleNeutralMode(ctx) {
   try {
     if (deriveIncidentText) {
       if (DEBUG) console.log('[NEUTRAL] calling deriveIncidentText (multi: true)');
-      const aiResp = await deriveIncidentText({ text, multi: true });
-      aiIncidents = normalizeAiIncidents(aiResp, text);
+      const aiResp = await deriveIncidentText({ text: t, multi: true });
+      aiIncidents = normalizeAiIncidents(aiResp, t);
       if (DEBUG) console.log('[NEUTRAL] deriveIncidentText multi result', { aiIncidents, raw: aiResp });
     }
   } catch (e) {
@@ -314,12 +396,18 @@ async function handleNeutralMode(ctx) {
     problems = aiIncidents;
   } else {
     if (DEBUG) console.log('[NEUTRAL] fallback to heuristic split');
-    const parts = splitMultipleProblemsHeuristic(text);
+    const parts = splitMultipleProblemsHeuristic(t);
+    if (parts.length > 1) {
+      const real = parts.filter(p => /no\s+sirve|no\s+funciona|necesito|apoyan|ayuda|falla|error|tv|wifi|aire|agua|baño|toallas?/i.test(p));
+      if (real.length <= 1) {
+        return handleNewIncident({ ...ctx, text: t });
+      }
+    }
     if (DEBUG) console.log('[NEUTRAL] heuristic split parts', { count: parts.length, parts });
 
     if (parts.length <= 1) {
       if (DEBUG) console.log('[NEUTRAL] single problem detected, calling handleNewIncident');
-      return handleNewIncident(ctx);
+      return handleNewIncident({ ...ctx, text: t });
     }
 
     let lastKnownPlace = null;
@@ -367,7 +455,7 @@ async function handleNeutralMode(ctx) {
       if (!s.draft._migratedToMultiple) {
         const existing = {
           descripcion_original: s.draft.descripcion_original || s.draft.descripcion || '',
-          descripcion: cleanDescription ? cleanDescription(s.draft.descripcion || '') : (s.draft.descripcion || ''),
+          descripcion: (s.draft.descripcion && typeof cleanDescription === 'function') ? cleanDescription(s.draft.descripcion) : (s.draft.descripcion || ''),
           lugar: s.draft.lugar || null,
           area_destino: s.draft.area_destino || null,
           _ticketNum: s._multipleTickets.length + 1
@@ -385,7 +473,7 @@ async function handleNeutralMode(ctx) {
   // Añadir los nuevos borradores derivados (no reemplazar los existentes)
   for (const raw of problems) {
     const draft = {};
-    draft.descripcion_original = raw.descripcion_original || raw.descripcion || text;
+    draft.descripcion_original = raw.descripcion_original || raw.descripcion || t;
     draft.descripcion = (raw.descripcion && typeof cleanDescription === 'function') ? cleanDescription(raw.descripcion) : (raw.descripcion || draft.descripcion_original);
     draft.lugar = raw.lugar || null;
     draft.area_destino = raw.area_destino || null;
@@ -404,7 +492,6 @@ async function handleNeutralMode(ctx) {
     if (draft.lugar && typeof normalizeAndSetLugar === 'function') {
       try {
         const normRes = await normalizeAndSetLugar(s, msg, draft.lugar, { fromMultiple: true });
-        // normalizeAndSetLugar puede devolver { success, lugar, label, canonical_label, ... }
         if (normRes && (normRes.lugar || normRes.label || normRes.canonical_label)) {
           draft.lugar = normRes.lugar || normRes.label || normRes.canonical_label;
         }
@@ -415,7 +502,6 @@ async function handleNeutralMode(ctx) {
 
     // ✅ Si en multi quedó alberca genérica, pedir aclaración (detener y preguntar)
     if (userSaidPoolGeneric(draft.descripcion_original) && isGenericPoolLugar(draft.lugar)) {
-      // Guardamos lo que ya tenemos y pedimos aclaración sobre ESTE ticket
       s.draft = {
         descripcion: draft.descripcion,
         descripcion_original: draft.descripcion_original,
@@ -423,8 +509,6 @@ async function handleNeutralMode(ctx) {
         area_destino: draft.area_destino || null,
         areas: draft.area_destino ? [draft.area_destino] : [],
       };
-      // limpiar cola multi para evitar mezclas raras; opcional: mantenerlos si tu flujo lo requiere
-      // s._multipleTickets = [];
       return await askPoolDisambiguation(ctx);
     }
 
@@ -447,8 +531,7 @@ async function handleNeutralMode(ctx) {
   if (DEBUG) console.log('[NEUTRAL] setting mode to multiple_tickets and delegating', { totalPending: s._multipleTickets.length });
   setMode(s, 'multiple_tickets');
 
-  // IMPORTANTE: Para que el handler de multiple_tickets se ejecute INMEDIATAMENTE
-  // después de cambiar el modo en el mismo turno, llamamos al handler directamente si existe.
+  // Ejecutar el handler inmediatamente si existe
   try {
     const { getHandler } = require('./index');
     const multiHandler = getHandler ? getHandler('multiple_tickets') : null;
@@ -471,9 +554,12 @@ async function handleMediaInNeutral(ctx) {
     return ctx._legacyHandleMedia(ctx);
   }
   const { s, msg, replySafe } = ctx;
+
   if (typeof ensureMediaBatch === 'function') {
-    try { await ensureMediaBatch(s, msg); } catch (e) { if (DEBUG) console.warn('[NEUTRAL] ensureMediaBatch err', e?.message); }
+    try { await ensureMediaBatch(s, msg); }
+    catch (e) { if (DEBUG) console.warn('[NEUTRAL] ensureMediaBatch err', e?.message); }
   }
+
   await replySafe(msg, '📎 archivo recibido. Cuéntame qué problema muestra y dónde está.');
   return true;
 }
@@ -488,17 +574,19 @@ async function handleNewIncident(ctx) {
     refreshIncidentDescription, autoAssignArea
   } = ctx;
 
-  if (DEBUG) console.log('[NEUTRAL] processing new incident', { text: text?.substring(0, 120) });
+  const t = (text || '').trim();
+  if (!t) return false;
+
+  if (DEBUG) console.log('[NEUTRAL] processing new incident', { text: t?.substring(0, 120) });
 
   s.draft = s.draft || {};
-  s.draft.descripcion = text;
-  s.draft.descripcion_original = text;
+  s.draft.descripcion = t;
+  s.draft.descripcion_original = t;
 
-  const strongPlace = findStrongPlaceSignals ? findStrongPlaceSignals(text) : null;
+  const strongPlace = findStrongPlaceSignals ? findStrongPlaceSignals(t) : null;
   if (strongPlace && strongPlace.value && typeof normalizeAndSetLugar === 'function') {
     try {
-      // normalizeAndSetLugar puede mutar la sesión o devolver la normalización
-      const res = await normalizeAndSetLugar(s, msg, strongPlace.value, { rawText: text });
+      const res = await normalizeAndSetLugar(s, msg, strongPlace.value, { rawText: t });
       if (res && (res.lugar || res.label || res.canonical_label)) {
         s.draft.lugar = res.lugar || res.label || res.canonical_label;
       }
@@ -510,14 +598,14 @@ async function handleNewIncident(ctx) {
   }
 
   // ✅ Si quedó alberca/piscina genérico, pedir aclaración y NO avanzar a preview/confirm
-  if (userSaidPoolGeneric(text) && isGenericPoolLugar(s.draft.lugar)) {
+  if (userSaidPoolGeneric(t) && isGenericPoolLugar(s.draft.lugar)) {
     s.draft.lugar = null;
     return await askPoolDisambiguation(ctx);
   }
 
   try {
     if (detectArea) {
-      const areaResult = await detectArea(text);
+      const areaResult = await detectArea(t);
       if (areaResult?.area) {
         if (typeof setDraftField === 'function') setDraftField(s, 'area_destino', areaResult.area);
         if (typeof addArea === 'function') addArea(s, areaResult.area);
@@ -528,11 +616,13 @@ async function handleNewIncident(ctx) {
   }
 
   if (!s.draft.area_destino && typeof autoAssignArea === 'function') {
-    try { await autoAssignArea(s); } catch (e) { if (DEBUG) console.warn('[NEUTRAL] autoAssignArea err', e?.message); }
+    try { await autoAssignArea(s); }
+    catch (e) { if (DEBUG) console.warn('[NEUTRAL] autoAssignArea err', e?.message); }
   }
 
   if (typeof refreshIncidentDescription === 'function') {
-    try { await refreshIncidentDescription(s, text); } catch (e) { if (DEBUG) console.warn('[NEUTRAL] refreshIncidentDescription err', e?.message); }
+    try { await refreshIncidentDescription(s, t); }
+    catch (e) { if (DEBUG) console.warn('[NEUTRAL] refreshIncidentDescription err', e?.message); }
   }
 
   const preview = formatPreviewMessage(s.draft);
@@ -555,8 +645,8 @@ async function handleNewIncident(ctx) {
  * Export handler
  */
 async function handleNeutral(ctx) {
-  const { s, text, msg } = ctx;
-  if (text || msg?.hasMedia) return handleNeutralMode(ctx);
+  const { text, msg } = ctx;
+  if ((text && String(text).trim()) || msg?.hasMedia) return handleNeutralMode(ctx);
   return false;
 }
 

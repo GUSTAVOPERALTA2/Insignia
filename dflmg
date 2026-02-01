@@ -1,0 +1,47 @@
+warning: in the working copy of 'data/lugares.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'index.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'modules/db/incidenceDB.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'modules/router/niHandlers/index.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'modules/router/niHandlers/modeConfirm.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'modules/router/niHandlers/modeNeutral.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'modules/router/niHandlers/modePlaceSelection.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'modules/router/niHandlers/shared.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'modules/router/routeIncomingNI.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package-lock.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+ README.md                                       |   2 [31m-[m
+ data/lugares.json                               |  39 [32m+[m[31m-[m
+ index.js                                        | 481 [32m+++++++++++[m[31m--[m
+ modules/ai/coreIntentRouter.js                  |  49 [32m+[m[31m-[m
+ modules/ai/feedbackDisambiguator.js             | 409 [31m-----------[m
+ modules/core/coreMessageRouter.js               | 146 [32m++[m[31m--[m
+ modules/core/safeReply.js                       | 248 [32m++++++[m[31m-[m
+ modules/dashboard/api.js                        | 328 [31m---------[m
+ modules/dashboard/cancelNotify.js               | 325 [31m---------[m
+ modules/dashboard/doneNotify.js                 | 191 [31m-----[m
+ modules/dashboard/progressNotify.js             | 137 [31m----[m
+ modules/db/incidenceDB.js                       | 319 [32m+++++++[m[31m--[m
+ modules/groups/groupRouter.js                   | 156 [32m++[m[31m--[m
+ modules/notify/requesterDM.js                   |  58 [32m+[m[31m-[m
+ modules/reports/exportXLSX.js                   | 105 [32m++[m[31m-[m
+ modules/router/niHandlers/index.js              |  22 [32m+[m[31m-[m
+ modules/router/niHandlers/modeConfirm.js        | 910 [32m+++++++++++[m[31m-------------[m
+ modules/router/niHandlers/modeNeutral.js        | 204 [32m++++[m[31m--[m
+ modules/router/niHandlers/modePlaceSelection.js | 507 [32m++++++++++[m[31m---[m
+ modules/router/niHandlers/shared.js             | 135 [32m++[m[31m--[m
+ modules/router/routeGroupsUpdate.js             | 350 [32m+++++[m[31m----[m
+ modules/router/routeIncomingNI.js               | 357 [32m+++++++[m[31m---[m
+ modules/router/routeRequesterReply.js           | 180 [32m+++[m[31m--[m
+ modules/router/routeTeamFeedback.js             |   4 [32m+[m
+ modules/router/routeTicketQuery.js              |   2 [32m+[m[31m-[m
+ modules/router/unknownHandler.js                |   2 [32m+[m[31m-[m
+ modules/utils/safeReply.js                      |  40 [31m--[m
+ package-lock.json                               | 231 [32m+[m[31m-----[m
+ package.json                                    |  15 [32m+[m[31m-[m
+ public/dashboard/app.js                         | 473 [31m------------[m
+ public/dashboard/index.html                     |  97 [31m---[m
+ public/dashboard/styles.css                     | 547 [31m--------------[m
+ public/read                                     |  59 [31m--[m
+ testFeedbackEngine.js                           | 102 [31m---[m
+ tests/feedbackEngineCases.json                  | 294 [31m--------[m
+ 35 files changed, 2964 insertions(+), 4560 deletions(-)

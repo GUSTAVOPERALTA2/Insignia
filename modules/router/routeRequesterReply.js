@@ -31,11 +31,11 @@ function loadUsersCache() {
   if (usersCache && (now - usersCacheTime) < USERS_CACHE_TTL) {
     return usersCache;
   }
-  
+
   try {
     const usersPath = process.env.USERS_PATH || './data/users.json';
     const fullPath = path.resolve(process.cwd(), usersPath);
-    
+
     if (fs.existsSync(fullPath)) {
       const data = fs.readFileSync(fullPath, 'utf8');
       usersCache = JSON.parse(data);
@@ -44,21 +44,63 @@ function loadUsersCache() {
   } catch (e) {
     if (DEBUG) console.warn('[REQ-FB] loadUsersCache err:', e?.message);
   }
-  
+
   return usersCache || {};
+}
+
+function getUnifiedText(msg) {
+  const candidates = [
+    msg?._text,
+    msg?.body,
+    msg?.caption,
+    msg?._data?.caption,
+    msg?._data?.body,
+  ];
+  const v = candidates.find((x) => typeof x === 'string' && x.trim().length);
+  return (v || '').trim();
+}
+
+async function extractForwardMedia(msg) {
+  const media = [];
+  if (!msg) return media;
+
+  // 1) si el mensaje trae media
+  if (msg.hasMedia) {
+    try {
+      const m = await msg.downloadMedia();
+      if (m) media.push(m);
+    } catch (e) {
+      if (DEBUG) console.warn('[REQ-FB] downloadMedia failed (msg)', e?.message || e);
+    }
+  }
+
+  // 2) si no trae, pero cita uno con media
+  if (media.length === 0 && msg.hasQuotedMsg) {
+    try {
+      const quoted = await msg.getQuotedMessage();
+      if (quoted?.hasMedia) {
+        const qm = await quoted.downloadMedia();
+        if (qm) media.push(qm);
+      }
+    } catch (e) {
+      if (DEBUG) console.warn('[REQ-FB] downloadMedia failed (quoted)', e?.message || e);
+    }
+  }
+
+  return media;
 }
 
 function findUserByPhone(phoneId) {
   const users = loadUsersCache();
   if (!users || !phoneId) return null;
-  
+
   // Buscar directamente por ID
   if (users[phoneId]) return { id: phoneId, ...users[phoneId] };
-  
+
   // Buscar por número (últimos 10 dígitos)
   const digits = String(phoneId).replace(/\D/g, '');
   if (digits.length < 10) return null;
-  
+
   const shortSuffix = digits.slice(-10);
   for (const [userId, userData] of Object.entries(users)) {
     const userDigits = String(userId).replace(/\D/g, '');
@@ -66,7 +108,7 @@ function findUserByPhone(phoneId) {
       return { id: userId, ...userData };
     }
   }
-  
+
   return null;
 }
 
@@ -83,7 +125,7 @@ async function resolveRequesterName(client, msg, chatId) {
       return cargo ? `${name} (${cargo})` : name;
     }
   }
-  
+
   // 2. Intentar obtener del contacto de WhatsApp
   try {
     const contact = await msg.getContact();
@@ -94,7 +136,7 @@ async function resolveRequesterName(client, msg, chatId) {
   } catch (e) {
     if (DEBUG) console.warn('[REQ-FB] getContact err:', e?.message);
   }
-  
+
   // 3. Intentar con client.getContactById
   if (client && chatId) {
     try {
@@ -107,20 +149,20 @@ async function resolveRequesterName(client, msg, chatId) {
       // Ignorar
     }
   }
-  
+
   // 4. Fallback: número
   const num = String(chatId).replace(/@.*$/, '').replace(/\D/g, '');
   if (num.length >= 10) {
     return num.slice(-10);
   }
-  
+
   return 'Solicitante';
 }
 
 // ✅ SAFE REPLY (absorbe "Session closed" sin matar proceso)
 let safeReply = null;
 try {
-  ({ safeReply } = require('../utils/safeReply'));
+  ({ safeReply } = require('../core/safeReply'));
 } catch (e) {
   safeReply = null;
   if (DEBUG) console.warn('[REQ-FB] safeReply missing:', e?.message || e);
@@ -391,6 +433,7 @@ function looksLikeAck(text = '') {
 
 function looksLikeNI(text = '') {
   const s = String(text || '').toLowerCase();
+  if (!s) return false;
   for (const w of NI_WORDS) {
     if (w && s.includes(w)) return true;
   }
@@ -464,21 +507,39 @@ function formatStatusSummaryForRequester(incident) {
   return lines.join('\n');
 }
 
+async function findIncidentByFolio(folio) {
+  if (!folio) return null;
+  if (typeof incidenceDB.getIncidentByFolio === 'function') {
+    try {
+      return await incidenceDB.getIncidentByFolio(folio);
+    } catch (e) {
+      if (DEBUG) console.warn('[REQ-FB] getIncidentByFolio err', e?.message || e);
+      return null;
+    }
+  }
+  return null;
+}
+
 async function findIncidentByQuotedFolio(msg) {
   try {
     if (!msg.hasQuotedMsg) return null;
     const quoted = await msg.getQuotedMessage();
-    const m = String(quoted?.body || '').toUpperCase().match(FOLIO_RE);
+
+    // ✅ FIX: el citado puede traer texto en caption/_text
+    const quotedText = String(
+      quoted?._text || quoted?.body || quoted?.caption || quoted?._data?.caption || quoted?._data?.body || ''
+    ).trim();
+
+    const m = quotedText.toUpperCase().match(FOLIO_RE);
     if (!m) return null;
     const folio = m[0];
-    if (typeof incidenceDB.getIncidentByFolio === 'function') {
-      const inc = await incidenceDB.getIncidentByFolio(folio);
-      return inc?.id || null;
-    }
+
+    const inc = await findIncidentByFolio(folio);
+    return inc ? inc.id : null;
   } catch (e) {
     if (DEBUG) console.warn('[REQ-FB] findIncidentByQuotedFolio err', e?.message || e);
+    return null;
   }
-  return null;
 }
 
 async function findIncidentByFolioInBody(body) {
@@ -582,11 +643,17 @@ async function maybeHandleRequesterReply(client, msg) {
 
   // ✅ Anti-doble-ejecución local (si el core por cualquier razón re-invoca)
   if (msg.__reqReplyHandled === true) return true;
+
+  const bodyRaw = getUnifiedText(msg);
+  const hasMedia = !!msg?.hasMedia;
+
+  // ✅ Aceptar "media-only" (sin texto)
+  if (!bodyRaw && !hasMedia) return false;
+
+  // Marcar como manejado ya que SÍ aplica (texto o evidencia)
   msg.__reqReplyHandled = true;
 
-  const body = String(msg.body || '').trim();
-  if (!body) return false;
-
+  const body = bodyRaw || (hasMedia ? '(Evidencia adjunta)' : '');
   const chatId = msg.from;
 
   // Intent/flags si coreMessageRouter los inyectó
@@ -597,9 +664,14 @@ async function maybeHandleRequesterReply(client, msg) {
     console.log('[REQ-FB] maybeHandleRequesterReply IN', {
       chatId,
       body,
+      bodyRaw,
+      hasMedia,
       isStatusQueryFromIntent,
     });
   }
+
+  // Extraer evidencia una sola vez (si existe)
+  const mediaForGroups = await extractForwardMedia(msg);
 
   // --- 0) ¿Está respondiendo a un MENÚ con un número? ---
   let incidentId = null;
@@ -613,8 +685,8 @@ async function maybeHandleRequesterReply(client, msg) {
     });
   }
 
-  if (menuCtx && looksLikeNumericChoice(body)) {
-    const idx = parseInt(body, 10) - 1;
+  if (menuCtx && looksLikeNumericChoice(bodyRaw || body)) {
+    const idx = parseInt(bodyRaw || body, 10) - 1;
     const chosenId = menuCtx.incidentIds[idx];
 
     if (!chosenId) {
@@ -625,7 +697,7 @@ async function maybeHandleRequesterReply(client, msg) {
     if (DEBUG) {
       console.log('[STATUS-MENU] elección numérica', {
         chatId,
-        choice: body,
+        choice: bodyRaw || body,
         incidentId: chosenId,
       });
     }
@@ -635,8 +707,8 @@ async function maybeHandleRequesterReply(client, msg) {
     selectedFromStatusMenu = true;
   }
 
-  const heuristicStatusQuery = isStatusQueryFromIntent || looksLikeStatusQuery(body);
-  const isAck = looksLikeAck(body);
+  const heuristicStatusQuery = isStatusQueryFromIntent || (bodyRaw ? looksLikeStatusQuery(bodyRaw) : false);
+  const isAck = bodyRaw ? looksLikeAck(bodyRaw) : false;
 
   if (DEBUG) {
     console.log('[REQ-FB] flags post-basic', {
@@ -648,14 +720,17 @@ async function maybeHandleRequesterReply(client, msg) {
   }
 
   // Evitar chocar con N-I
-  if (isBareYesNo(body) && !msg.hasQuotedMsg && !FOLIO_RE.test(body)) {
-    if (DEBUG) console.log('[REQ-FB] bare yes/no sin contexto → dejar pasar a N-I');
-    return false;
-  }
+  // (solo aplica cuando HAY texto real; si es media-only, no bloqueamos)
+  if (bodyRaw) {
+    if (isBareYesNo(bodyRaw) && !msg.hasQuotedMsg && !FOLIO_RE.test(bodyRaw)) {
+      if (DEBUG) console.log('[REQ-FB] bare yes/no sin contexto → dejar pasar a N-I');
+      return false;
+    }
 
-  if (looksLikeNI(body)) {
-    if (DEBUG) console.log('[REQ-FB] looksLikeNI → dejar pasar al flujo N-I');
-    return false;
+    if (looksLikeNI(bodyRaw)) {
+      if (DEBUG) console.log('[REQ-FB] looksLikeNI → dejar pasar al flujo N-I');
+      return false;
+    }
   }
 
   // 1) quoted folio (si aún no tenemos incidentId por menú)
@@ -671,8 +746,8 @@ async function maybeHandleRequesterReply(client, msg) {
   }
 
   // 2) folio en el texto
-  if (!incidentId) {
-    incidentId = await findIncidentByFolioInBody(body);
+  if (!incidentId && bodyRaw) {
+    incidentId = await findIncidentByFolioInBody(bodyRaw);
     if (DEBUG && incidentId) console.log('[REQ-FB] incidentId por folio en body', { incidentId });
   }
 
@@ -726,7 +801,7 @@ async function maybeHandleRequesterReply(client, msg) {
   let fb;
   try {
     fb = await runFeedbackEngine({
-      text: body,
+      text: body, // ✅ usa body (puede ser placeholder si es evidencia-only)
       roleHint: 'requester',
       ticket: ticketCtx,
       history: [],
@@ -767,10 +842,11 @@ async function maybeHandleRequesterReply(client, msg) {
     requester_side: fb.requester_side,
     polarity: fb.polarity,
     note: noteText,
-    raw_text: body,
+    raw_text: bodyRaw || '',
     confidence: fb.confidence,
     via: msg.hasQuotedMsg ? 'reply_folio' : selectedFromStatusMenu ? 'status_menu_choice' : 'ctx_or_recent',
     ts: Date.now(),
+    has_media: !!hasMedia,
   };
 
   try {
@@ -808,7 +884,7 @@ async function maybeHandleRequesterReply(client, msg) {
   const currentStatus = ticketCtx.status || null;
   const nextStatusFromEngine = fb.next_status || currentStatus;
   const statusChanged = nextStatusFromEngine && nextStatusFromEngine !== currentStatus;
-  
+
   // Detectar si es cancelación o completado
   const isCancelOrComplete = (nextStatusFromEngine === 'canceled' || nextStatusFromEngine === 'done') && statusChanged;
 
@@ -817,7 +893,7 @@ async function maybeHandleRequesterReply(client, msg) {
       await updateStatus(incidentId, nextStatusFromEngine);
     }
 
-    // 9.a) Notificar a grupos
+    // 9.a) Notificar a grupos (✅ con evidencia si existe)
     try {
       if (isCancelOrComplete) {
         // Mensaje especial para cancelación/completado con nombre del solicitante
@@ -825,7 +901,7 @@ async function maybeHandleRequesterReply(client, msg) {
         const statusEmoji = nextStatusFromEngine === 'done' ? '✅' : '🚫';
         const statusLabel = nextStatusFromEngine === 'done' ? 'Completado' : 'Cancelado';
         const actionVerb = nextStatusFromEngine === 'done' ? 'marcó como completado' : 'canceló';
-        
+
         const groupMessage = [
           `${statusEmoji} *${inc.folio}* — ${statusLabel} por solicitante`,
           ``,
@@ -833,24 +909,24 @@ async function maybeHandleRequesterReply(client, msg) {
           ``,
           `— _${requesterName}_`
         ].join('\n');
-        
+
         await sendFollowUpToGroups(client, {
           incident: inc,
           message: groupMessage,
-          media: [],
+          media: mediaForGroups,
         });
-        
-        if (DEBUG) console.log('[REQ-FB] notified group of requester action', { 
-          folio: inc.folio, 
+
+        if (DEBUG) console.log('[REQ-FB] notified group of requester action', {
+          folio: inc.folio,
           action: nextStatusFromEngine,
-          requester: requesterName 
+          requester: requesterName
         });
       } else {
         // Notificación normal de feedback
         await sendFollowUpToGroups(client, {
           incident: inc,
           message: noteText,
-          media: [],
+          media: mediaForGroups,
         });
       }
     } catch (e) {
@@ -859,7 +935,7 @@ async function maybeHandleRequesterReply(client, msg) {
   } else {
     // Confirmación implícita
     const st = (currentStatus || '').toLowerCase();
-    const positiveAck = looksLikeAck(body) && fb.polarity !== 'negative';
+    const positiveAck = bodyRaw ? (looksLikeAck(bodyRaw) && fb.polarity !== 'negative') : false;
 
     if (st === 'awaiting_confirmation' && positiveAck) {
       const finalStatus = 'done';
@@ -870,7 +946,7 @@ async function maybeHandleRequesterReply(client, msg) {
     }
   }
 
-  // 9.b) Si es pregunta de estatus, avisar a los grupos
+  // 9.b) Si es pregunta de estatus, avisar a los grupos (✅ con evidencia si existe)
   let shouldPingTeam = false;
   try {
     const st = (inc.status || 'open').toLowerCase();
@@ -879,8 +955,8 @@ async function maybeHandleRequesterReply(client, msg) {
     if (shouldPingTeam) {
       await sendFollowUpToGroups(client, {
         incident: inc,
-        message: `📣 El solicitante pregunta por el estado de este ticket:\n"${body}"`,
-        media: [],
+        message: `📣 El solicitante pregunta por el estado de este ticket:\n"${bodyRaw || body}"`,
+        media: mediaForGroups,
       });
     }
   } catch (e) {

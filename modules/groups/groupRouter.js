@@ -1,8 +1,9 @@
 // modules/groups/groupRouter.js
 // Resolución y envío de incidencias a grupos de WhatsApp basados en un catálogo JSON plano.
+// ✅ FIX: Agregado retry con delay para errores internos de WA (markedUnread, etc.)
 
 const fsp = require('fs/promises');
-const fs = require('fs'); // ✅ lectura sync con cache (formatIncidentMessage es sync)
+const fs = require('fs');
 const path = require('path');
 
 const DEBUG = (process.env.VICEBOT_DEBUG || '1') === '1';
@@ -12,58 +13,87 @@ const GROUPS_PATH =
 
 const DRYRUN = (process.env.VICEBOT_GROUPS_DRYRUN || '0') === '1';
 
-// ✅ users.json (para resolver Origen: Nombre (Cargo))
 const USERS_PATH =
   process.env.USERS_PATH ||
   process.env.VICEBOT_USERS_PATH ||
   path.join(process.cwd(), 'data', 'users.json');
 
-// Cache de users.json (60s)
 let _usersCache = null;
 let _usersCacheTs = 0;
 
 // ──────────────────────────────────────────────────────────────
-// ✅ SAFE SEND (protege contra "Session closed" / desconexión / puppeteer)
+// ✅ SAFE SEND (protege contra errores de WA + sesión cerrada)
 // ──────────────────────────────────────────────────────────────
-const SAFE_SEND_MAX_RETRIES = parseInt(process.env.VICEBOT_SAFE_SEND_MAX_RETRIES || '2', 10);
-const SAFE_SEND_BASE_DELAY_MS = parseInt(process.env.VICEBOT_SAFE_SEND_BASE_DELAY_MS || '350', 10);
+const SAFE_SEND_MAX_RETRIES = parseInt(process.env.VICEBOT_SAFE_SEND_MAX_RETRIES || '3', 10);
+const SAFE_SEND_BASE_DELAY_MS = parseInt(process.env.VICEBOT_SAFE_SEND_BASE_DELAY_MS || '1000', 10);
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Detecta si es un error fatal de sesión (requiere reconexión)
+ */
 function isSessionClosedError(e) {
   const msg = String(e?.message || e || '').toLowerCase();
-
-  // típicos de whatsapp-web.js / puppeteer / chromium
   return (
     msg.includes('session closed') ||
     msg.includes('protocol error') ||
     msg.includes('target closed') ||
     msg.includes('execution context was destroyed') ||
     msg.includes('most likely the page has been closed') ||
-    msg.includes('cannot read properties of null') ||
-    msg.includes('navigation failed') ||
-    msg.includes('evaluation failed') ||
-    msg.includes('socket hang up') ||
-    msg.includes('ecconnreset') ||
-    msg.includes('econnreset') ||
-    msg.includes('epipe') ||
-    msg.includes('detached frame') ||
-    msg.includes('timeout') ||
-    msg.includes('timed out')
+    msg.includes('page crashed') ||
+    msg.includes('session was closed') ||
+    msg.includes('connection closed')
   );
 }
 
+/**
+ * Detecta si es un error interno de WhatsApp Web (intermitente, recuperable)
+ */
+function isWhatsAppInternalError(e) {
+  const msg = String(e?.message || e || '').toLowerCase();
+  return (
+    msg.includes('markedunread') ||
+    msg.includes('cannot read properties of undefined') ||
+    msg.includes('cannot read properties of null') ||
+    msg.includes('evaluation failed') ||
+    msg.includes('wid') ||
+    msg.includes('sendseen') ||
+    msg.includes('navigation failed') ||
+    msg.includes('detached frame') ||
+    msg.includes('timeout') ||
+    msg.includes('timed out') ||
+    msg.includes('socket hang up') ||
+    msg.includes('econnreset') ||
+    msg.includes('epipe')
+  );
+}
+
+/**
+ * Determina si un error es recuperable (vale la pena reintentar)
+ */
+function isRetryableError(e) {
+  if (isWhatsAppInternalError(e)) return true;
+  if (isSessionClosedError(e)) return false;
+  return true;
+}
+
+/**
+ * Envía un mensaje a un grupo/chat de forma segura con retry automático
+ */
 async function safeSendMessage(client, chatId, content, options = undefined) {
   const gid = String(chatId || '').trim();
   if (!gid) return { ok: false, error: 'EMPTY_CHAT_ID' };
   if (!client || typeof client.sendMessage !== 'function') return { ok: false, error: 'INVALID_CLIENT' };
 
+  // ✅ FIX markedUnread: forzar sendSeen: false para evitar el error
+  const opts = { sendSeen: false, ...(options || {}) };
+
   if (DRYRUN) {
     if (DEBUG) {
       console.log('[GROUPS DRYRUN] ->', gid, {
-        hasOptions: !!options,
+        hasOptions: !!opts,
         preview: typeof content === 'string' ? content.slice(0, 250) : '[media]',
       });
     }
@@ -72,31 +102,45 @@ async function safeSendMessage(client, chatId, content, options = undefined) {
 
   for (let attempt = 0; attempt <= SAFE_SEND_MAX_RETRIES; attempt++) {
     try {
-      await client.sendMessage(gid, content, options);
+      await client.sendMessage(gid, content, opts);
+      
+      if (attempt > 0 && DEBUG) {
+        console.log('[GROUPS] safeSendMessage succeeded on attempt', attempt + 1);
+      }
+      
       return { ok: true };
     } catch (e) {
-      const msg = e?.message || String(e);
-      const retryable = isSessionClosedError(e);
+      const errMsg = e?.message || String(e);
+      const retryable = isRetryableError(e);
+      const isSessionError = isSessionClosedError(e);
 
-      if (DEBUG) {
+      if (DEBUG && attempt === 0) {
         console.warn('[GROUPS] safeSendMessage failed', {
           gid,
           attempt: `${attempt + 1}/${SAFE_SEND_MAX_RETRIES + 1}`,
           retryable,
-          msg,
+          isSessionError,
+          msg: errMsg.substring(0, 150),
         });
       }
 
+      if (isSessionError) {
+        return { ok: false, error: errMsg, fatal: true };
+      }
+
       if (!retryable || attempt >= SAFE_SEND_MAX_RETRIES) {
-        return { ok: false, error: msg };
+        return { ok: false, error: errMsg };
       }
 
       const wait = SAFE_SEND_BASE_DELAY_MS * (attempt + 1);
+      if (DEBUG) {
+        console.log(`[GROUPS] retrying in ${wait}ms (attempt ${attempt + 2}/${SAFE_SEND_MAX_RETRIES + 1})`);
+      }
       await sleep(wait);
     }
   }
 
-  return { ok: false, error: 'UNKNOWN_SEND_FAIL' };
+  return { ok: false, error: 'MAX_RETRIES_EXCEEDED' };
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -126,7 +170,6 @@ function loadUsersMapCached() {
   return _usersCache;
 }
 
-// Devuelve: "Nombre (Cargo)" o fallback al waId
 function resolveOriginDisplay(originWaLike) {
   const waId = canonWaId(originWaLike);
   if (!waId) return null;
@@ -298,7 +341,6 @@ function formatIncidentMessage({ id, folio, descripcion, lugar, originName, orig
   return lines.join('\n');
 }
 
-// Encabezado + descripción corta + comentario (Formato A)
 function formatRequesterFollowup(incident, comment) {
   const folio = incident?.folio || `INC-${incident?.id?.slice(0, 6) || '????'}`;
 
@@ -317,63 +359,48 @@ function formatRequesterFollowup(incident, comment) {
 // ──────────────────────────────────────────────────────────────
 // Enviar a grupos (NUEVOS tickets)
 // ──────────────────────────────────────────────────────────────
-async function sendIncidentToGroups(client, { message, primaryId, ccIds = [], media = null, additionalMedia = [] }) {
+async function sendIncidentToGroups(client, { message, primaryId, ccIds = [], media = null }) {
   const sent = [];
   const errors = [];
 
   if (!primaryId) return { sent, errors: ['NO_PRIMARY'] };
 
-  // Helper para enviar a un grupo (mensaje principal + imágenes adicionales)
-  const sendToGroup = async (gid, isCC = false) => {
-    try {
-      // 1) Enviar mensaje principal (con o sin primera imagen)
-      if (media) {
-        const res = await safeSendMessage(client, gid, media, { caption: message });
-        if (!res.ok) {
-          errors.push({ id: gid, error: res.error || 'SEND_FAIL' });
-          return;
-        }
-      } else {
-        const res = await safeSendMessage(client, gid, message);
-        if (!res.ok) {
-          errors.push({ id: gid, error: res.error || 'SEND_FAIL' });
-          return;
-        }
-      }
-      
-      // 2) Enviar imágenes adicionales (sin caption)
-      if (Array.isArray(additionalMedia) && additionalMedia.length > 0) {
-        for (let i = 0; i < additionalMedia.length; i++) {
-          await sleep(300);  // Anti-spam delay
-          const addRes = await safeSendMessage(client, gid, additionalMedia[i]);
-          if (!addRes.ok && DEBUG) {
-            console.warn('[GROUPS] additional media failed', { gid, index: i, error: addRes.error });
-          }
-        }
-      }
-      
-      sent.push({ id: gid, ...(isCC ? { cc: true } : {}) });
-    } catch (e) {
-      if (DEBUG) console.warn('[GROUPS] send failed', gid, e?.message || e);
-      errors.push({ id: gid, error: e?.message || String(e) });
+  try {
+    if (media) {
+      const res = await safeSendMessage(client, primaryId, media, { caption: message });
+      if (res.ok) sent.push({ id: primaryId, ...(res.dryrun ? { dryrun: true } : {}) });
+      else errors.push({ id: primaryId, error: res.error || 'SEND_FAIL' });
+    } else {
+      const res = await safeSendMessage(client, primaryId, message);
+      if (res.ok) sent.push({ id: primaryId, ...(res.dryrun ? { dryrun: true } : {}) });
+      else errors.push({ id: primaryId, error: res.error || 'SEND_FAIL' });
     }
-  };
+  } catch (e) {
+    if (DEBUG) console.warn('[GROUPS] send primary failed', primaryId, e?.message || e);
+    errors.push({ id: primaryId, error: e?.message || String(e) });
+  }
 
-  // Enviar al grupo principal
-  await sendToGroup(primaryId, false);
-
-  // CC con delay anti-spam
   for (const gid of ccIds) {
     await sleep(250);
-    await sendToGroup(gid, true);
+    try {
+      if (media) {
+        const res = await safeSendMessage(client, gid, media, { caption: message });
+        if (res.ok) sent.push({ id: gid, ...(res.dryrun ? { dryrun: true } : {}) });
+        else errors.push({ id: gid, error: res.error || 'SEND_FAIL' });
+      } else {
+        const res = await safeSendMessage(client, gid, message);
+        if (res.ok) sent.push({ id: gid, ...(res.dryrun ? { dryrun: true } : {}) });
+        else errors.push({ id: gid, error: res.error || 'SEND_FAIL' });
+      }
+    } catch (e) {
+      if (DEBUG) console.warn('[GROUPS] send CC failed', gid, e?.message || e);
+      errors.push({ id: gid, error: e?.message || String(e) });
+    }
   }
 
   return { sent, errors };
 }
 
-/**
- * Follow-ups hacia los grupos (comentarios, cambios de estado, etc.)
- */
 async function sendFollowUpToGroups(client, { incident, message, media = [] }) {
   const cfg = await loadGroupsConfig();
   const areasFromJson = (() => {
@@ -395,7 +422,6 @@ async function sendFollowUpToGroups(client, { incident, message, media = [] }) {
   const sendTo = async (gid) => {
     try {
       if (media && Array.isArray(media) && media.length > 0) {
-        // 1) primera media con caption
         const first = media[0];
         const r1 = await safeSendMessage(client, gid, first, { caption: text });
         if (!r1.ok) {
@@ -404,14 +430,12 @@ async function sendFollowUpToGroups(client, { incident, message, media = [] }) {
           return;
         }
 
-        // 2) resto sin caption
         for (let i = 1; i < media.length; i++) {
           await sleep(200);
           const ri = await safeSendMessage(client, gid, media[i]);
           if (!ri.ok) {
             errors.push({ id: gid, error: ri.error || 'SEND_FAIL' });
             if (DEBUG) console.warn('[GROUPS] follow-up send failed (media)', gid, ri.error);
-            // seguimos intentando las siguientes? mejor NO, para no spamear
             break;
           }
         }
@@ -480,12 +504,10 @@ module.exports = {
   listAllGroups,
   bindGroup,
 
-  // ✅ EXPORTS
   getAreaByGroupId,
   getBoundGroupIdByArea,
   normalizeAreaKey,
   invalidateGroupsCache,
 
-  // ✅ (opcional) export para debugging
   safeSendMessage,
 };

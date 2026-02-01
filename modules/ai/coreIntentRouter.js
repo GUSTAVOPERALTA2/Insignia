@@ -1,5 +1,6 @@
 // modules/ai/coreIntentRouter.js
 // VERSIÓN FINAL (AJUSTADA): Incidencias (N-I) conservador, smalltalk y unknown SOLO cuando es claramente no-incidencia
+// ✅ FIX 2026-01: Soporta texto en mensajes con media (caption) además de msg.body
 
 const DEBUG = (process.env.VICEBOT_DEBUG || '1') === '1';
 
@@ -204,15 +205,32 @@ function isClearlyNonIncident(text = '') {
   return true;
 }
 
+/**
+ * ✅ FIX CENTRAL: obtener texto real de WA (body/caption)
+ * WhatsApp a veces manda el texto del mensaje con media como caption.
+ */
+function getMsgText(msg, textOverride) {
+  const candidates = [
+    textOverride,
+    msg?.body,
+    msg?.caption,
+    msg?._data?.caption,
+    msg?._data?.body,
+  ];
+  const v = candidates.find(x => typeof x === 'string' && x.trim().length);
+  return (v || '').trim();
+}
+
 // ─────────────────────────────────────────────
 // Señales básicas
 // ─────────────────────────────────────────────
 async function extractBasicSignals({ msg, text }) {
-  const body = text || msg.body || '';
+  // ✅ FIX: usa caption cuando aplica
+  const body = getMsgText(msg, text);
   const chatId = msg.from || '';
   const isGroup = isGroupChatId(chatId);
   const fromMe = !!msg.fromMe;
-  const hasMedia = !!msg.hasMedia;  // ✅ NUEVO: detectar si tiene media
+  const hasMedia = !!msg.hasMedia;
 
   const hasFolioInBody = FOLIO_RE.test(String(body).toUpperCase());
 
@@ -220,6 +238,7 @@ async function extractBasicSignals({ msg, text }) {
   if (msg.hasQuotedMsg && typeof msg.getQuotedMessage === 'function') {
     try {
       const quoted = await msg.getQuotedMessage();
+      // quoted también puede tener caption en algunos casos, pero para folio basta con body
       if (quoted && FOLIO_RE.test(String(quoted.body || '').toUpperCase())) {
         hasQuotedFolio = true;
       }
@@ -232,7 +251,7 @@ async function extractBasicSignals({ msg, text }) {
     chatId,
     isGroup,
     fromMe,
-    hasMedia,  // ✅ NUEVO
+    hasMedia,
     hasFolioInBody,
     hasQuotedFolio,
     isGreeting: isShortGreeting(body),
@@ -255,7 +274,7 @@ async function classifyMessageIntent({ msg, text, context = {} }) {
     chatId,
     isGroup,
     fromMe,
-    hasMedia,  // ✅ NUEVO
+    hasMedia,
     hasFolioInBody,
     hasQuotedFolio,
     isGreeting,
@@ -278,42 +297,42 @@ async function classifyMessageIntent({ msg, text, context = {} }) {
   }
 
   if (fromMe) {
-    return { intent:'self_message', target:null, confidence:1, reason:'from_me', flags:signals };
+    return { intent: 'self_message', target: null, confidence: 1, reason: 'from_me', flags: signals };
   }
 
   if (isCommand) {
-    return { intent:'command', target:'commandRouter', confidence:0.99, reason:'slash', flags:signals };
+    return { intent: 'command', target: 'commandRouter', confidence: 0.99, reason: 'slash', flags: signals };
   }
 
   // ✅ CRÍTICO: Si hay sesión NI activa, TODO va a routeIncomingNI
-  // (incluyendo saludos, smalltalk, etc. - el handler de NI decidirá qué hacer)
   if (hasActiveNISession) {
-    return { intent:'ni_turn', target:'routeIncomingNI', confidence:0.9, reason:'active_ni', flags:signals };
+    return { intent: 'ni_turn', target: 'routeIncomingNI', confidence: 0.9, reason: 'active_ni', flags: signals };
   }
 
   // ✅ NUEVO: Si tiene media (imagen/archivo), enviar a N-I para que se almacene
   // Esto permite que el usuario envíe primero una foto y luego la descripción
+  // ✅ Con FIX: si venía caption, 'body' ya trae ese texto real.
   if (!isGroup && hasMedia) {
-    return { intent:'ni_new', target:'routeIncomingNI', confidence:0.85, reason:'dm_has_media', flags:signals };
+    return { intent: 'ni_new', target: 'routeIncomingNI', confidence: 0.85, reason: 'dm_has_media', flags: signals };
   }
 
   // Solo si NO hay sesión NI activa, procesar smalltalk
   if (isMetaBot || isHelpLike || isGreeting) {
-    return { intent:'smalltalk', target:'smalltalkHandler', confidence:0.9, reason:'smalltalk', flags:signals };
+    return { intent: 'smalltalk', target: 'smalltalkHandler', confidence: 0.9, reason: 'smalltalk', flags: signals };
   }
 
   if (!isGroup && (hasRoom || isIncidentLike)) {
-    return { intent:'ni_new', target:'routeIncomingNI', confidence:0.9, reason:'incident_dm', flags:signals };
+    return { intent: 'ni_new', target: 'routeIncomingNI', confidence: 0.9, reason: 'incident_dm', flags: signals };
   }
 
   if (looksLikeTicketFeedback({ text: body, hasFolioInBody, hasQuotedFolio })) {
     return isGroup
-      ? { intent:'team_feedback', target:'routeTeamFeedback', confidence:0.9, reason:'folio_group', flags:signals }
-      : { intent:'requester_feedback', target:'routeRequesterReply', confidence:0.9, reason:'folio_dm', flags:signals };
+      ? { intent: 'team_feedback', target: 'routeTeamFeedback', confidence: 0.9, reason: 'folio_group', flags: signals }
+      : { intent: 'requester_feedback', target: 'routeRequesterReply', confidence: 0.9, reason: 'folio_dm', flags: signals };
   }
 
   if (!isGroup && isStatusQuery) {
-    return { intent:'requester_feedback', target:'routeRequesterReply', confidence:0.8, reason:'status_query', flags:signals };
+    return { intent: 'requester_feedback', target: 'routeRequesterReply', confidence: 0.8, reason: 'status_query', flags: signals };
   }
 
   // ✅ SOLO manda a unknown si es claramente charla / pregunta general (alta precisión)

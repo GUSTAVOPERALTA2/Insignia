@@ -2,6 +2,7 @@
 // Persistencia de incidencias (SQLite + fallback JSONL), idempotencia, eventos y adjuntos
 // Lecturas para Dashboard: listIncidents / getIncidentById
 // + Soporte para cancelación desde grupos y desambiguación por grupo/área.
+// ✅ FIX: Persistir origin_name como ID estable (WA ID) y exponer display (nombre+cargo) para dashboard.
 
 const fs = require('fs');
 const path = require('path');
@@ -11,8 +12,95 @@ const DEBUG = (process.env.VICEBOT_DEBUG || '1') === '1';
 const DB_PATH = process.env.VICEBOT_DB_PATH || path.join(process.cwd(), 'data', 'vicebot.sqlite');
 const JSONL_PATH = process.env.VICEBOT_JSONL_FALLBACK || path.join(process.cwd(), 'data', 'incidents.jsonl');
 
+// ✅ users.json (para resolver nombre + cargo SOLO en salidas del dashboard)
+const USERS_PATH =
+  process.env.USERS_PATH ||
+  process.env.VICEBOT_USERS_PATH ||
+  path.join(process.cwd(), 'data', 'users.json');
+
+let _usersCache = null;
+let _usersCacheTs = 0;
+
+function canonWaId(v) {
+  const s = String(v || '').trim();
+  if (!s) return '';
+  if (/^\d{8,16}$/.test(s)) return `${s}@c.us`;
+  return s;
+}
+
+function loadUsersMapCached() {
+  const now = Date.now();
+  if (_usersCache && (now - _usersCacheTs) < 60_000) return _usersCache;
+
+  try {
+    if (!fs.existsSync(USERS_PATH)) {
+      _usersCache = {};
+    } else {
+      let raw = fs.readFileSync(USERS_PATH, 'utf8');
+      raw = String(raw || '').replace(/^\uFEFF/, '');
+      const json = JSON.parse(raw || '{}');
+      _usersCache = (json && typeof json === 'object') ? json : {};
+    }
+  } catch {
+    _usersCache = {};
+  }
+
+  _usersCacheTs = now;
+  return _usersCache;
+}
+
+function resolveOriginDisplay(originWaLike) {
+  const waId = canonWaId(originWaLike);
+  if (!waId) return null;
+
+  const users = loadUsersMapCached();
+  const u = users[waId];
+  if (!u) return waId;
+
+  const nombre = String(u.nombre || '').trim();
+  const cargo = String(u.cargo || '').trim();
+
+  if (nombre && cargo) return `${nombre} (${cargo})`;
+  if (nombre) return nombre;
+
+  return waId;
+}
+
 // Permite emitir un evento auxiliar de ACK cuando se cancela (además del status_change)
 const EMIT_GROUP_ACK_EVENT_DEFAULT = (process.env.VICEBOT_GROUP_EMIT_ACK_EVENT || '0') === '1';
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD NOTIFIER
+// ══════════════════════════════════════════════════════════════════════════════
+
+const DASHBOARD_WEBHOOK_URL = process.env.VICEBOT_DASHBOARD_WEBHOOK_URL || 'http://localhost:3031/api/webhook/notify';
+const DASHBOARD_WEBHOOK_TOKEN = process.env.VICEBOT_DASHBOARD_WEBHOOK_TOKEN || null;
+
+async function notifyDashboard(payload) {
+  if (!payload || !payload.type) return;
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (DASHBOARD_WEBHOOK_TOKEN) headers['Authorization'] = `Bearer ${DASHBOARD_WEBHOOK_TOKEN}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+
+    const res = await fetch(DASHBOARD_WEBHOOK_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ ...payload, timestamp: new Date().toISOString() }),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+
+    if (DEBUG && res.ok) {
+      const data = await res.json().catch(() => ({}));
+      console.log(`[DASH-NOTIFY] OK (${data.clients || 0} clients):`, payload.type);
+    }
+  } catch (e) {
+    if (DEBUG) console.log('[DASH-NOTIFY] Skip:', e?.name === 'AbortError' ? 'timeout' : e?.message);
+  }
+}
 
 let sqlite = null;
 try { sqlite = require('better-sqlite3'); } catch { sqlite = null; if (DEBUG) console.warn('[DB] better-sqlite3 no instalado. Fallback a JSONL.'); }
@@ -50,13 +138,29 @@ function areaToPrefix(area) {
 }
 function safeParse(s) { try { return JSON.parse(s); } catch { return s; } }
 
+// ✅ Checkpoint inmediato para que el dashboard pueda leer los datos
+function walCheckpoint() {
+  if (!db) return;
+  try {
+    db.pragma('wal_checkpoint(PASSIVE)');
+  } catch (e) {
+    // Ignorar errores
+  }
+}
+
 function initSQLite() {
   if (!sqlite) return;
   ensureDirs();
   db = sqlite(DB_PATH);
   db.pragma('journal_mode = WAL');
 
-  // Tabla base
+  setInterval(() => {
+    try {
+      db.pragma('wal_checkpoint(PASSIVE)');
+      if (DEBUG) console.log('[DB] WAL checkpoint');
+    } catch (e) {}
+  }, 10000);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS incidents (
       id TEXT PRIMARY KEY,
@@ -90,7 +194,6 @@ function initSQLite() {
     CREATE INDEX IF NOT EXISTS idx_incidents_folio ON incidents(folio);
   `);
 
-  // Migraciones seguras
   tryAlter(`CREATE UNIQUE INDEX IF NOT EXISTS ux_incidents_wa_first ON incidents(wa_first_msg_id)`);
   tryAlter(`ALTER TABLE incidents ADD COLUMN origin_name TEXT`);
   tryAlter(`ALTER TABLE incidents ADD COLUMN attachments_json TEXT`);
@@ -123,7 +226,6 @@ function initSQLite() {
     );
   `);
 
-  // Prepared
   stmtInsertIncident = db.prepare(`
     INSERT INTO incidents (
       id, folio, created_at, updated_at, last_msg_at, status,
@@ -159,7 +261,6 @@ function initSQLite() {
      WHERE id = @incident_id
   `);
 
-  // Hilos por chat (open) – se mantiene igual
   stmtFindOpenByChat = db.prepare(`
     SELECT *
       FROM incidents
@@ -185,7 +286,6 @@ function initSQLite() {
      WHERE id = @id
   `);
 
-  // NEW prepareds
   stmtGetIncidentByFolio = db.prepare(`
     SELECT id, folio, chat_id, descripcion, interpretacion, lugar, area_destino, status, created_at, updated_at,
            areas_json, notes_json, attachments_json, origin_name
@@ -194,7 +294,6 @@ function initSQLite() {
     LIMIT 1
   `);
 
-  // ⬇️ PENDIENTES = open o in_progress
   stmtListOpenByArea = db.prepare(`
     SELECT *
       FROM incidents
@@ -204,8 +303,6 @@ function initSQLite() {
     LIMIT @limit
   `);
 
-
-  // ⬇️ PENDIENTES = open o in_progress
   stmtListOpenDispatchedToGroupWithin = db.prepare(`
     SELECT i.*
       FROM incidents i
@@ -239,10 +336,7 @@ function nextFolioForArea(areaCode) {
 
 // Map + persist
 function mapDraftToRecord(draft, meta = {}) {
-  // ✅ FIX: Validar que draft no sea undefined/null
   const d = draft || {};
-  
-  // ✅ FIX: Usar ID del draft si existe
   const id = d.id || randomUUID();
   const ts = nowISO();
 
@@ -253,7 +347,6 @@ function mapDraftToRecord(draft, meta = {}) {
   const visionSafety = Array.isArray(meta.visionSafety) ? meta.visionSafety : [];
   const attachments  = Array.isArray(d.attachments) ? d.attachments : [];
 
-  // ✅ FIX: Usar folio del draft si existe
   const folio = d.folio || nextFolioForArea(d.area_destino) || null;
 
   return {
@@ -281,20 +374,53 @@ function mapDraftToRecord(draft, meta = {}) {
     attachments_json: JSON.stringify(attachments),
     source: meta.source || 'whatsapp',
     raw_draft_json: JSON.stringify(d),
-    origin_name: meta.originName || null,
+
+    // ✅ Ahora persistimos un identificador estable (idealmente waId: 521...@c.us)
+    origin_name: d.origin_name || meta.originName || null,
   };
 }
 
 function persistIncident(draft, meta = {}) {
   const rec = mapDraftToRecord(draft, meta);
+
+  // Resolver display SOLO para notificación/dashboard
+  const originWa = rec.origin_name || rec.chat_id || null;
+  const originDisplay = originWa ? resolveOriginDisplay(originWa) : null;
+
   if (db && stmtInsertIncident) {
     stmtInsertIncident.run(rec);
+    walCheckpoint();
     if (DEBUG) console.log('[DB] incident.inserted', rec.id, rec.folio || '(sin folio)');
+
+    notifyDashboard({
+      type: 'new_incident',
+      incidentId: rec.id,
+      folio: rec.folio,
+      area: rec.area_destino,
+      lugar: rec.lugar,
+      status: rec.status,
+      origin_wa: originWa,
+      origin_display: originDisplay
+    });
+
     return { id: rec.id, folio: rec.folio || null, driver: 'sqlite', path: DB_PATH };
   }
+
   ensureDirs();
   fs.appendFileSync(JSONL_PATH, JSON.stringify({ type: 'incident', ...rec }) + '\n');
   if (DEBUG) console.log('[DB] incident.appended (JSONL)', rec.id, rec.folio || '(sin folio)');
+
+  notifyDashboard({
+    type: 'new_incident',
+    incidentId: rec.id,
+    folio: rec.folio,
+    area: rec.area_destino,
+    lugar: rec.lugar,
+    status: rec.status,
+    origin_wa: originWa,
+    origin_display: originDisplay
+  });
+
   return { id: rec.id, folio: rec.folio || null, driver: 'jsonl', path: JSONL_PATH };
 }
 
@@ -303,6 +429,12 @@ function setIncidentClosed(incidentId) {
   if (!db) return;
   const ts = nowISO();
   db.prepare(`UPDATE incidents SET status='closed', updated_at=@ts WHERE id=@id`).run({ id: incidentId, ts });
+
+  notifyDashboard({
+    type: 'status_change',
+    incidentId,
+    status: 'closed'
+  });
 }
 
 function updateIncidentFolioIfMissing(incidentId, areaCode) {
@@ -342,6 +474,15 @@ function appendIncidentEvent(incidentId, { event_type, payload = {}, wa_msg_id =
   });
   tx();
   if (DEBUG) console.log('[DB] event.appended', { incidentId, event_type, wa_msg_id });
+
+  if (['comment_text', 'attachment_added', 'dispatched_to_groups', 'team_feedback', 'group_status_update', 'requester_feedback'].includes(event_type)) {
+    notifyDashboard({
+      type: 'incident_update',
+      incidentId,
+      eventType: event_type
+    });
+  }
+
   return rec.id;
 }
 
@@ -353,10 +494,6 @@ function _getCurrentAttachmentsSQLite(incidentId) {
   return Array.isArray(arr) ? arr : [];
 }
 
-/**
- * Registra un adjunto (solo metadatos, el archivo lo guarda la capa superior).
- * fileMeta = { id?, filename, mimetype, url, size }
- */
 function appendIncidentAttachment(incidentId, fileMeta, opts = {}) {
   const ts = nowISO();
   const meta = {
@@ -368,12 +505,11 @@ function appendIncidentAttachment(incidentId, fileMeta, opts = {}) {
     created_at: ts,
   };
 
-  // Soporta alias: createEvent / alsoEvent (por compat)
   const createEvent = (typeof opts.createEvent === 'boolean')
     ? opts.createEvent
     : (typeof opts.alsoEvent === 'boolean'
-        ? opts.alsoEvent
-        : true);
+      ? opts.alsoEvent
+      : true);
 
   if (db) {
     const arr = _getCurrentAttachmentsSQLite(incidentId);
@@ -406,16 +542,31 @@ function appendIncidentAttachment(incidentId, fileMeta, opts = {}) {
     tx();
 
     if (DEBUG) console.log('[DB] attachment.added', { incidentId, file: meta.filename });
+
+    notifyDashboard({
+      type: 'incident_update',
+      incidentId,
+      eventType: 'attachment_added',
+      filename: meta.filename
+    });
+
     return meta.id;
   }
 
-  // JSONL
   ensureDirs();
   fs.appendFileSync(
     JSONL_PATH,
     JSON.stringify({ type: 'incident_attachment', incident_id: incidentId, meta, created_at: ts }) + '\n'
   );
   if (DEBUG) console.log('[DB] attachment.appended(JSONL)', { incidentId, file: meta.filename });
+
+  notifyDashboard({
+    type: 'incident_update',
+    incidentId,
+    eventType: 'attachment_added',
+    filename: meta.filename
+  });
+
   return meta.id;
 }
 
@@ -463,7 +614,6 @@ async function listIncidentsForChat(chatId, opts = {}) {
     ? opts.statusFilter.map(s => String(s || '').toLowerCase()).filter(Boolean)
     : [];
 
-  // Fallback JSONL
   if (!db) {
     if (!fs.existsSync(JSONL_PATH)) return [];
 
@@ -509,10 +659,10 @@ async function listIncidentsForChat(chatId, opts = {}) {
       updated_at: r.updated_at || null,
       area_destino: r.area_destino || null,
       chat_id: r.chat_id || null,
+      origin_name: r.origin_name || null, // crudo (wa id)
     }));
   }
 
-  // Con SQLite
   const wanted = statuses.length ? statuses : null;
 
   let sql = `
@@ -526,7 +676,8 @@ async function listIncidentsForChat(chatId, opts = {}) {
       created_at,
       updated_at,
       area_destino,
-      chat_id
+      chat_id,
+      origin_name
     FROM incidents
     WHERE chat_id = @chatId
   `;
@@ -565,6 +716,7 @@ async function listIncidentsForChat(chatId, opts = {}) {
     updated_at: r.updated_at || null,
     area_destino: r.area_destino || null,
     chat_id: r.chat_id || null,
+    origin_name: r.origin_name || null, // crudo (wa id)
   }));
 }
 
@@ -581,7 +733,6 @@ async function listIncidentsByArea(areaCode, opts = {}) {
     ? opts.statusFilter.map(s => String(s || '').toLowerCase()).filter(Boolean)
     : [];
 
-  // JSONL fallback
   if (!db) {
     if (!fs.existsSync(JSONL_PATH)) return [];
 
@@ -623,10 +774,10 @@ async function listIncidentsByArea(areaCode, opts = {}) {
       updated_at: r.updated_at || null,
       area_destino: r.area_destino || null,
       chat_id: r.chat_id || null,
+      origin_name: r.origin_name || null, // crudo
     }));
   }
 
-  // SQLite
   const wanted = statuses.length ? statuses : null;
 
   let sql = `
@@ -640,7 +791,8 @@ async function listIncidentsByArea(areaCode, opts = {}) {
       created_at,
       updated_at,
       area_destino,
-      chat_id
+      chat_id,
+      origin_name
     FROM incidents
     WHERE LOWER(area_destino) = @area
   `;
@@ -678,6 +830,7 @@ async function listIncidentsByArea(areaCode, opts = {}) {
     updated_at: r.updated_at || null,
     area_destino: r.area_destino || null,
     chat_id: r.chat_id || null,
+    origin_name: r.origin_name || null, // crudo
   }));
 }
 
@@ -704,6 +857,8 @@ async function getIncidentById(idOrFolio) {
     const baseAtts = safeParse(inc.attachments_json || '[]');
     const allAtts = [...(Array.isArray(baseAtts) ? baseAtts : []), ...attachments];
 
+    const originWa = inc.origin_name || inc.chat_id || null;
+
     return {
       id: inc.id,
       folio: inc.folio,
@@ -717,7 +872,9 @@ async function getIncidentById(idOrFolio) {
       updated_at: inc.updated_at,
       areas: safeParse(inc.areas_json || '[]') || [],
       notes: safeParse(inc.notes_json || '[]') || [],
-      origin_name: inc.origin_name || null,
+      origin_name: inc.origin_name || null,          // crudo
+      origin_display: originWa ? resolveOriginDisplay(originWa) : null,
+      origin_wa: originWa,
       events: [],
       attachments: allAtts
     };
@@ -738,9 +895,11 @@ async function getIncidentById(idOrFolio) {
     ORDER BY created_at ASC
   `).all(inc.id);
 
-  const areas = safeParse(inc.areas_json || '[]'); 
+  const areas = safeParse(inc.areas_json || '[]');
   const notes = safeParse(inc.notes_json || '[]');
   const atts  = safeParse(inc.attachments_json || '[]');
+
+  const originWa = inc.origin_name || inc.chat_id || null;
 
   return {
     id: inc.id,
@@ -755,7 +914,9 @@ async function getIncidentById(idOrFolio) {
     updated_at: inc.updated_at,
     areas: Array.isArray(areas) ? areas : [],
     notes: Array.isArray(notes) ? notes : [],
-    origin_name: inc.origin_name || null,
+    origin_name: inc.origin_name || null,          // crudo
+    origin_display: originWa ? resolveOriginDisplay(originWa) : null,
+    origin_wa: originWa,
     events: (events || []).map(e => ({
       ...e,
       payload: typeof e.payload === 'string' ? safeParse(e.payload) : e.payload
@@ -776,7 +937,7 @@ async function getIncidentByFolio(folio) {
   const inc = stmtGetIncidentByFolio.get(String(folio));
   if (!inc) return null;
 
-  const areas = safeParse(inc.areas_json || '[]'); 
+  const areas = safeParse(inc.areas_json || '[]');
   const notes = safeParse(inc.notes_json || '[]');
   const atts  = safeParse(inc.attachments_json || '[]');
 
@@ -786,6 +947,8 @@ async function getIncidentByFolio(folio) {
     WHERE incident_id = ?
     ORDER BY created_at ASC
   `).all(inc.id);
+
+  const originWa = inc.origin_name || inc.chat_id || null;
 
   return {
     id: inc.id,
@@ -800,7 +963,9 @@ async function getIncidentByFolio(folio) {
     updated_at: inc.updated_at,
     areas: Array.isArray(areas) ? areas : [],
     notes: Array.isArray(notes) ? notes : [],
-    origin_name: inc.origin_name || null,
+    origin_name: inc.origin_name || null,          // crudo
+    origin_display: originWa ? resolveOriginDisplay(originWa) : null,
+    origin_wa: originWa,
     events: (events || []).map(e => ({
       ...e,
       payload: typeof e.payload === 'string' ? safeParse(e.payload) : e.payload
@@ -815,7 +980,6 @@ function listOpenIncidentsByArea(areaCode, { limit = 10 } = {}) {
   if (!areaCode) return [];
 
   if (!db) {
-    // JSONL
     if (!fs.existsSync(JSONL_PATH)) return [];
     const lines = fs.readFileSync(JSONL_PATH, 'utf8').split('\n').filter(Boolean);
     const incidents = [];
@@ -842,7 +1006,6 @@ function listOpenIncidentsByArea(areaCode, { limit = 10 } = {}) {
     area: String(areaCode).toLowerCase(),
     limit: Math.max(1, limit),
   });
-
 }
 
 // 3) Listar pendientes (open/in_progress) despachados a un grupo recientemente
@@ -851,12 +1014,11 @@ function listOpenIncidentsRecentlyDispatchedToGroup(groupId, { windowMins = 60 *
   if (!groupId) return [];
 
   if (!db) {
-    // JSONL
     if (!fs.existsSync(JSONL_PATH)) return [];
     const lines = fs.readFileSync(JSONL_PATH, 'utf8').split('\n').filter(Boolean);
     const incidents = [];
     const statusMap = new Map();
-    const dispatched = new Map(); // incId -> bool
+    const dispatched = new Map();
 
     const cutoff = Date.now() - Math.max(1, windowMins) * 60 * 1000;
 
@@ -897,9 +1059,6 @@ function listOpenIncidentsRecentlyDispatchedToGroup(groupId, { windowMins = 60 *
   return stmtListOpenDispatchedToGroupWithin.all({ windowExpr, needle, limit: Math.max(1, limit) });
 }
 
-/* ──────────────────────────────
- * API genérica (opcional): por estados
- * ────────────────────────────── */
 async function listGroupIncidentsByStatus(groupId, statuses = ['open','in_progress'], { windowMins = 60 * 24 * 3, limit = 30 } = {}) {
   ensureReady();
   if (!groupId) return [];
@@ -963,9 +1122,6 @@ async function listGroupIncidentsByStatus(groupId, statuses = ['open','in_progre
   return db.prepare(sql).all(...args);
 }
 
-/* ──────────────────────────────
- * Cerrar / Actualizar estado
- * ────────────────────────────── */
 function updateIncidentStatus(incidentId, newStatus) {
   ensureReady();
 
@@ -976,10 +1132,17 @@ function updateIncidentStatus(incidentId, newStatus) {
       JSONL_PATH,
       JSON.stringify({ type: 'incident_status', incident_id: incidentId, to: newStatus, at: ts }) + '\n'
     );
+
+    notifyDashboard({
+      type: 'status_change',
+      incidentId,
+      status: newStatus
+    });
+
     return { from: null, to: newStatus, at: ts };
   }
 
-  const row = db.prepare(`SELECT status FROM incidents WHERE id = ?`).get(incidentId);
+  const row = db.prepare(`SELECT status, folio FROM incidents WHERE id = ?`).get(incidentId);
   if (!row) return null;
 
   const tx = db.transaction(() => {
@@ -1002,26 +1165,29 @@ function updateIncidentStatus(incidentId, newStatus) {
     });
   });
   tx();
+  walCheckpoint();
 
   if (DEBUG) console.log('[DB] status.updated', { id: incidentId, from: row.status, to: newStatus });
+
+  notifyDashboard({
+    type: 'status_change',
+    incidentId,
+    folio: row.folio,
+    from: row.status,
+    status: newStatus
+  });
+
   return { from: row.status, to: newStatus, at: ts };
 }
 
-/**
- * DEPRECADO (compatibilidad): cancelar incidente.
- * Ahora sólo hace status_change → 'canceled' y opcionalmente emite un ACK auxiliar.
- * opts: { reason?:string, by?:string, note?:string, wa_msg_id?:string, emitAckEvent?:boolean }
- */
 function closeIncident(incidentId, opts = {}) {
   ensureReady();
   const emitAck = typeof opts.emitAckEvent === 'boolean'
     ? opts.emitAckEvent
     : EMIT_GROUP_ACK_EVENT_DEFAULT;
 
-  // 1) Cambiar estado (esto genera el evento status_change)
   const res = updateIncidentStatus(incidentId, 'canceled');
 
-  // 2) (Opcional) ACK auxiliar para UI/forense
   if (emitAck && db && res) {
     try {
       appendIncidentEvent(incidentId, {
@@ -1037,7 +1203,6 @@ function closeIncident(incidentId, opts = {}) {
       if (DEBUG) console.warn('[DB] closeIncident ack event error', e?.message || e);
     }
   } else if (!db && emitAck) {
-    // JSONL fallback del ACK
     const ts = nowISO();
     fs.appendFileSync(JSONL_PATH, JSON.stringify({
       type: 'incident_event',
@@ -1057,11 +1222,6 @@ function closeIncident(incidentId, opts = {}) {
   return { ok: true, at: nowISO() };
 }
 
-/* ──────────────────────────────
- * Extras de ergonomía
- * ────────────────────────────── */
-
-// Estado directo (para routers)
 function getIncidentStatus(incidentId) {
   ensureReady();
   if (!incidentId) return null;
@@ -1081,13 +1241,11 @@ function getIncidentStatus(incidentId) {
   return row ? (row.status || null) : null;
 }
 
-// Contexto compacto (id, folio, chat del solicitante, etc.)
 function getIncidentContext(incidentIdOrFolio) {
   ensureReady();
   if (!incidentIdOrFolio) return null;
 
   if (!db) {
-    // Reusa la lectura JSONL completa y sintetiza
     const inc = fs.existsSync(JSONL_PATH)
       ? fs.readFileSync(JSONL_PATH, 'utf8')
           .split('\n').filter(Boolean)
@@ -1128,7 +1286,6 @@ function getIncidentContext(incidentIdOrFolio) {
   };
 }
 
-// Helper consistente para registrar "dispatched_to_groups"
 function appendDispatchedToGroupsEvent(incidentId, { primaryId, ccIds = [] } = {}) {
   return appendIncidentEvent(incidentId, {
     event_type: 'dispatched_to_groups',
@@ -1155,9 +1312,7 @@ async function listIncidents(filters = {}) {
   } = filters;
 
   if (!db) {
-    // Fallback JSONL
     const items = [];
-    const attachByIncident = {};
     const lastStatus = new Map();
 
     if (fs.existsSync(JSONL_PATH)) {
@@ -1166,13 +1321,10 @@ async function listIncidents(filters = {}) {
         const obj = safeParse(ln);
         if (!obj) continue;
         if (obj.type === 'incident') items.push(obj);
-        else if (obj.type === 'incident_attachment') {
-          attachByIncident[obj.incident_id] = (attachByIncident[obj.incident_id] || 0) + 1;
-        } else if (obj.type === 'incident_status') {
-          lastStatus.set(obj.incident_id, String(obj.to).toLowerCase());
-        }
+        else if (obj.type === 'incident_status') lastStatus.set(obj.incident_id, String(obj.to).toLowerCase());
       }
     }
+
     let arr = items;
     const qv = q ? String(q).toLowerCase() : null;
     if (qv) {
@@ -1200,6 +1352,10 @@ async function listIncidents(filters = {}) {
       const baseAtts = safeParse(r.attachments_json || '[]');
       const count = Array.isArray(baseAtts) ? baseAtts.length : 0;
       const statusNow = (lastStatus.get(r.id) || String(r.status || 'open').toLowerCase());
+
+      const originWa = r.origin_name || r.chat_id || null;
+      const originDisplay = originWa ? resolveOriginDisplay(originWa) : null;
+
       return {
         id: r.id,
         folio: r.folio,
@@ -1209,6 +1365,11 @@ async function listIncidents(filters = {}) {
         estado: statusNow,
         created_at: r.created_at,
         updated_at: r.updated_at,
+
+        // ✅ Dashboard-friendly:
+        origin_name: originDisplay || null, // bonito (Nombre (Cargo))
+        origin_wa: originWa || null,        // crudo (521...@c.us)
+
         attachments_count: count,
         first_attachment_url: (Array.isArray(baseAtts) && baseAtts[0]?.url) || null
       };
@@ -1217,7 +1378,6 @@ async function listIncidents(filters = {}) {
     return { page, limit, total, items: itemsOut };
   }
 
-  // Con SQLite
   const [sortField, sortDirRaw] = String(sort || '').split(':');
   const sortDir = (sortDirRaw || 'desc').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
   const allowed = new Set(['created_at','updated_at','folio']);
@@ -1238,7 +1398,7 @@ async function listIncidents(filters = {}) {
 
   const sqlCount = `SELECT COUNT(*) as total FROM incidents ${whereSql}`;
   const sqlRows = `
-    SELECT id, folio, descripcion, lugar, area_destino, status, created_at, updated_at, attachments_json
+    SELECT id, folio, descripcion, lugar, area_destino, status, created_at, updated_at, attachments_json, origin_name, chat_id
     FROM incidents
     ${whereSql}
     ORDER BY ${orderBy} ${sortDir}
@@ -1252,6 +1412,10 @@ async function listIncidents(filters = {}) {
     const atts = safeParse(r.attachments_json || '[]');
     const attachments = Array.isArray(atts) ? atts : [];
     const first = attachments[0] || null;
+
+    const originWa = r.origin_name || r.chat_id || null;
+    const originDisplay = originWa ? resolveOriginDisplay(originWa) : null;
+
     return {
       id: r.id,
       folio: r.folio,
@@ -1261,6 +1425,11 @@ async function listIncidents(filters = {}) {
       estado: String(r.status || 'open').toLowerCase(),
       created_at: r.created_at,
       updated_at: r.updated_at,
+
+      // ✅ Dashboard-friendly:
+      origin_name: originDisplay || null, // bonito
+      origin_wa: originWa || null,        // crudo
+
       attachments_count: attachments.length,
       first_attachment_url: first?.url || null
     };
@@ -1285,32 +1454,24 @@ module.exports = {
   findOpenIncidentsByChat,
   findCandidateOpenIncident,
 
-  // NUEVO: listado por chat para /tickets
   listIncidentsForChat,
-
-  // ✅ NUEVO: listado por área para /tickets en grupos
   listIncidentsByArea,
 
-  // Lecturas existentes
   listIncidents,
   getIncidentById,
 
-  // APIs para router de grupos (pendientes = open/in_progress)
   getIncidentByFolio,
   listOpenIncidentsByArea,
   listOpenIncidentsRecentlyDispatchedToGroup,
 
-  // Estado
   updateIncidentStatus,
-
-  // Compat: cancelar (status_change only + ack opcional)
   closeIncident,
 
-  // Ergonomía y utilidades
   getIncidentStatus,
   getIncidentContext,
   appendDispatchedToGroupsEvent,
 
-  // Opcional: por estados (default open + in_progress)
   listGroupIncidentsByStatus,
+
+  notifyDashboard,
 };

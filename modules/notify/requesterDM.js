@@ -1,10 +1,15 @@
 const { allow } = require('../utils/rateLimiter');
 const tpl = require('./templates');
 
+// Importar safeSendMessage de groupRouter que ya tiene el fix de markedUnread
+const { safeSendMessage } = require('../groups/groupRouter');
+
 // Intenta obtener el chat del solicitante desde DB; si no, usa el cache de últimos despachos
 function getDB(){ try { return require('../db/incidenceDB'); } catch { return {}; } }
 const incidenceDB = getDB();
 const { getRequesterForIncident } = require('../state/lastGroupDispatch');
+
+const DEBUG = (process.env.VICEBOT_DEBUG || '1') === '1';
 
 async function getIncident(ctxOrId) {
   if (typeof ctxOrId === 'object' && ctxOrId && ctxOrId.id) return ctxOrId;
@@ -14,13 +19,18 @@ async function getIncident(ctxOrId) {
 }
 
 function pickRequesterChat(incident) {
-  // 1) meta.chatId / requester_chat en DB
+  // 1) chat_id directo en el incidente (campo principal de la DB)
+  if (incident?.chat_id) return incident.chat_id;
+  
+  // 2) meta.chatId / requester_chat en DB (compatibilidad)
   const meta = incident?.meta || incident?.meta_json || null;
   const dbChat = meta?.chatId || meta?.requester_chat || incident?.requester_chat || null;
   if (dbChat) return dbChat;
-  // 2) cache por último despacho
+  
+  // 3) cache por último despacho (memoria temporal)
   const cached = getRequesterForIncident(incident?.id);
   if (cached) return cached;
+  
   return null;
 }
 
@@ -28,15 +38,24 @@ function rlKey(incidentId, kind){ return `dm:${incidentId}:${kind}`; }
 
 async function sendDM({ client, incident, kind, data = {}, media = [] }) {
   const inc = await getIncident(incident);
-  if (!inc) return { ok:false, reason:'incident_not_found' };
+  if (!inc) {
+    if (DEBUG) console.log('[DM] incident_not_found');
+    return { ok: false, reason: 'incident_not_found' };
+  }
 
   const to = pickRequesterChat(inc);
-  if (!to) return { ok:false, reason:'requesterChat_not_found' };
+  if (!to) {
+    if (DEBUG) console.log('[DM] requesterChat_not_found for incident:', inc.id);
+    return { ok: false, reason: 'requesterChat_not_found' };
+  }
+
+  if (DEBUG) console.log(`[DM] Sending ${kind} to ${to} for folio ${inc.folio}`);
 
   // Rate limit básico (1 DM / 60s por tipo)
   const winSec = parseInt(process.env.VICEBOT_DM_RATE_WINDOW_SEC || '60', 10);
   if (!allow(rlKey(inc.id, kind), { windowMs: winSec * 1000, max: 1 })) {
-    return { ok:false, reason:'rate_limited' };
+    if (DEBUG) console.log('[DM] rate_limited');
+    return { ok: false, reason: 'rate_limited' };
   }
 
   // Render template
@@ -55,19 +74,26 @@ async function sendDM({ client, incident, kind, data = {}, media = [] }) {
     default:                text = `ℹ️ ${folio}: actualización del ticket.`; break;
   }
 
-  // Enviar
-  try {
-    // Si hay 1-2 imágenes pequeñas, primero texto y luego evidencias
-    await client.sendMessage(to, text);
-    if (Array.isArray(media) && media.length) {
-      for (const m of media) {
-        await client.sendMessage(to, m);
+  // Enviar mensaje principal usando safeSendMessage (mismo método que grupos)
+  const result = await safeSendMessage(client, to, text);
+  
+  if (!result.ok) {
+    if (DEBUG) console.log(`[DM] Failed to send: ${result.error}`);
+    return { ok: false, reason: result.error };
+  }
+
+  // Enviar media si hay
+  if (Array.isArray(media) && media.length) {
+    for (const m of media) {
+      const mediaResult = await safeSendMessage(client, to, m);
+      if (!mediaResult.ok && DEBUG) {
+        console.log(`[DM] Failed to send media: ${mediaResult.error}`);
       }
     }
-    return { ok:true };
-  } catch (e) {
-    return { ok:false, reason:e?.message || 'send_failed' };
   }
+
+  if (DEBUG) console.log(`[DM] Sent ${kind} to ${to} successfully`);
+  return { ok: true };
 }
 
 module.exports = { sendDM };
