@@ -1,212 +1,242 @@
 {
-    "5217751801318@c.us": {
+  "5217751801318@c.us": {
     "nombre": "Gustavo Peralta",
     "cargo": "IT Auxiliar",
     "rol": "admin",
     "team": "it",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "1318"
   },
   "5216242201467@c.us": {
     "nombre": "Omaly Martell",
     "cargo": "IT Assistant",
     "rol": "admin",
     "team": "it",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "1467"
   },
   "5216241661354@c.us": {
     "nombre": "Israel Flores",
     "cargo": "IT Manager",
     "rol": "admin",
     "team": "it",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "1354"
   },
   "5216242654986@c.us": {
     "nombre": "Héctor Sánchez",
     "cargo": "Supervisor Electromecánico",
     "rol": "user",
     "team": "man",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "4986"
   },
   "5216242307642@c.us": {
     "nombre": "Iván Reyes",
     "cargo": "Supervisor Villas",
     "rol": "user",
     "team": "man",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "7642"
   },
   "5216242437234@c.us": {
     "nombre": "Gilberto González",
     "cargo": "Supervisor Villas",
     "rol": "user",
     "team": "man",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "7234"
   },
   "5216241081431@c.us": {
     "nombre": "Adria Garciglia",
     "cargo": "Supervisora HOA",
     "rol": "user",
     "team": "man",
-    "titulo": "Srta."
+    "titulo": "Srta.",
+    "password": "1431"
   },
   "5216241712755@c.us": {
     "nombre": "Jonas Guerrero",
     "cargo": "Supervisor Jardinería",
     "rol": "user",
     "team": "man",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "2755"
   },
   "5216242449630@c.us": {
     "nombre": "Mauricio Bustamante",
     "cargo": "Supervisor Vespertino",
     "rol": "user",
     "team": "man",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "9630"
   },
   "5216241518830@c.us": {
     "nombre": "Eric Escobar",
     "cargo": "Supervisor Cuartos",
     "rol": "user",
     "team": "man",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "8830"
   },
   "5216253156748@c.us": {
     "nombre": "Leonardo Betanzo",
     "cargo": "Gte. Mantenimiento",
     "rol": "user",
     "team": "man",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "6748"
   },
   "5216242638103@c.us": {
     "nombre": "Jorge Rangel",
     "cargo": "Dir. Mantenimiento",
     "rol": "user",
     "team": "man",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "8103"
   },
   "5216242201518@c.us": {
     "nombre": "Keyner Cruz",
     "cargo": "Dir. Mantenimiento Residencias",
     "rol": "user",
     "team": "man",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "1518"
   },
   "5216241684889@c.us": {
     "nombre": "Margarita Fernandez",
     "cargo": "Dir. Ejec. HSKP",
     "rol": "user",
     "team": "ama",
-    "titulo": "Srta."
+    "titulo": "Srta.",
+    "password": "4889"
   },
   "5216241155397@c.us": {
     "nombre": "Luis Perez",
     "cargo": "Gerente Asist. HSKP",
     "rol": "user",
     "team": "ama",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "5397"
   },
   "5216241924860@c.us": {
     "nombre": "Mayra Alonso",
     "cargo": "Sup. de hotel",
     "rol": "user",
     "team": "ama",
-    "titulo": "Srta."
+    "titulo": "Srta.",
+    "password": "4860"
   },
   "5216241548263@c.us": {
     "nombre": "Ruth Medina",
     "cargo": "Sup. de villas",
     "rol": "user",
     "team": "ama",
-    "titulo": "Srta."
+    "titulo": "Srta.",
+    "password": "8263"
   },
   "5216241383889@c.us": {
     "nombre": "Beatriz Sanchez",
     "cargo": "Sup. de villas",
     "rol": "user",
     "team": "ama",
-    "titulo": "Srta."
+    "titulo": "Srta.",
+    "password": "3889"
   },
   "5216241564287@c.us": {
     "nombre": "Teresa Papayanopulos",
     "cargo": "Sup. de villas",
     "rol": "user",
     "team": "ama",
-    "titulo": "Srta."
+    "titulo": "Srta.",
+    "password": "4287"
   },
   "5216241513669@c.us": {
     "nombre": "Carmelo Beatriz",
     "cargo": "Sup. de hotel",
     "rol": "user",
     "team": "ama",
-    "titulo": "Srta."
+    "titulo": "Srta.",
+    "password": "3669"
   },
   "5216242196373@c.us": {
     "nombre": "Erick Vazquez",
     "cargo": "Sup. de hotel",
     "rol": "user",
     "team": "ama",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "6373"
   },
   "5216242307124@c.us": {
     "nombre": "Lourdes Patricia",
     "cargo": "Sup. de hotel",
     "rol": "user",
     "team": "ama",
-    "titulo": "Srta."
+    "titulo": "Srta.",
+    "password": "7124"
   },
   "5216241825937@c.us": {
     "nombre": "Yadira Juarez",
     "cargo": "Supervisora",
     "rol": "user",
     "team": "ama",
-    "titulo": "Srta."
+    "titulo": "Srta.",
+    "password": "5937"
   },
   "5216242645695@c.us": {
     "nombre": "Isaias Santa Fe",
     "cargo": "Jefe de lavanderia",
     "rol": "user",
     "team": "ama",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "5695"
   },
   "5216241915099@c.us": {
     "nombre": "David Camino",
     "cargo": "Sup. de lavanderia",
     "rol": "user",
     "team": "ama",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "5099"
   },
   "5216241687545@c.us": {
     "nombre": "Enrique Ponce",
     "cargo": "Jefe de Areas Publicas",
     "rol": "user",
     "team": "ama",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "7545"
   },
   "5216241258684@c.us": {
     "nombre": "Abelardo Perez",
     "cargo": "Sup. Areas Publicas",
     "rol": "user",
     "team": "ama",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "8684"
   },
   "5216242243070@c.us": {
     "nombre": "Rafael Martinez",
     "cargo": "Supervisor de Areas Publicas",
     "rol": "user",
     "team": "ama",
-    "titulo": "Sr."
+    "titulo": "Sr.",
+    "password": "3070"
   },
   "5216241192474@c.us": {
     "nombre": "Maribel Ramirez",
     "cargo": "Guest Experience Manager",
     "rol": "user",
     "team": "exp",
-    "titulo": "Srta."
+    "titulo": "Srta.",
+    "password": "2474"
   },
   "5216242672198@c.us": {
     "nombre": "Viceroy Connect",
     "cargo": "Connect",
     "rol": "user",
     "team": "exp",
-    "titulo": "Srtas."
+    "titulo": "Srtas.",
+    "password": "2198"
   }
 }

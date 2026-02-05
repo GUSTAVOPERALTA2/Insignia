@@ -3958,5 +3958,12 @@
       "banos de hombres"
     ],
     "area": "MAN"
+  },
+  {
+    "label": "Mantenimiento",
+    "type": "other",
+    "source": "freeform",
+    "added_at": "2026-02-05T21:14:14.844Z",
+    "area": "IT"
   }
 ]

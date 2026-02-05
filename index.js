@@ -868,6 +868,187 @@ async function gracefulExit(code = 0) {
   setTimeout(() => process.exit(code), 400);
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// WEBHOOK: Crear incidencia desde el Dashboard
+// ══════════════════════════════════════════════════════════════════════════════
+app.post('/api/webhook/create-incident', async (req, res) => {
+  try {
+    const { descripcion, area_destino, lugar, chat_id, attachments, source } = req.body;
+    
+    console.log('[WEBHOOK] Create incident from dashboard:', {
+      area: area_destino,
+      lugar,
+      chat_id,
+      source,
+      attachments: attachments?.length || 0
+    });
+    
+    // Validar campos requeridos
+    if (!descripcion || !area_destino || !lugar || !chat_id) {
+      return res.status(400).json({ 
+        error: 'missing_fields',
+        message: 'Campos requeridos: descripcion, area_destino, lugar, chat_id'
+      });
+    }
+    
+    // Validar que el cliente WA esté listo
+    if (!client || !WA_READY) {
+      return res.status(503).json({ 
+        error: 'wa_not_ready',
+        message: 'WhatsApp no está listo'
+      });
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // IMPORTANTE: Asegurar que SQLite esté listo
+    // ═══════════════════════════════════════════════════════════════
+    incidenceDB.ensureReady();
+    
+    // ═══════════════════════════════════════════════════════════════
+    // Crear draft para la incidencia
+    // ═══════════════════════════════════════════════════════════════
+    const areaUpper = area_destino.toUpperCase();
+    
+    const draft = {
+      chat_id: chat_id,
+      descripcion: descripcion.trim(),
+      lugar: lugar.trim(),
+      area_destino: areaUpper,
+      origin_name: chat_id,
+      status: 'open',
+      areas: [areaUpper], // Array de áreas
+      attachments: attachments || []
+    };
+    
+    const meta = {
+      source: 'dashboard',
+      originName: chat_id,
+      chatId: chat_id
+    };
+    
+    // Persistir en la BD (esto genera el folio automáticamente)
+    const result = incidenceDB.persistIncident(draft, meta);
+    
+    if (!result || !result.folio) {
+      console.error('[WEBHOOK] Failed to create incident - no folio generated');
+      return res.status(500).json({ 
+        error: 'incident_creation_failed',
+        message: 'No se pudo generar el folio de la incidencia'
+      });
+    }
+    
+    console.log('[WEBHOOK] Incident created in DB:', result.folio, result.id);
+    
+    // ═══════════════════════════════════════════════════════════════
+    // Procesar adjuntos si hay
+    // ═══════════════════════════════════════════════════════════════
+    if (attachments && Array.isArray(attachments) && attachments.length > 0) {
+      for (const att of attachments) {
+        try {
+          const fileMeta = {
+            filename: att.filename,
+            mimetype: att.mimetype,
+            size: att.size,
+            url: `/attachments/${result.folio}/${att.filename}`
+          };
+          
+          incidenceDB.appendIncidentAttachment(result.id, fileMeta);
+          console.log('[WEBHOOK] Attachment saved:', att.filename);
+        } catch (attErr) {
+          console.error('[WEBHOOK] Error saving attachment:', attErr.message);
+        }
+      }
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // Despachar a grupos usando el formato correcto
+    // ═══════════════════════════════════════════════════════════════
+    try {
+      // Importar funciones de grupos
+      const { 
+        loadGroupsConfig, 
+        resolveTargetGroups, 
+        formatIncidentMessage,
+        sendIncidentToGroups 
+      } = require('./modules/groups/groupRouter');
+      
+      const cfg = await loadGroupsConfig();
+      const { primaryId, ccIds } = resolveTargetGroups(draft, cfg);
+      
+      if (primaryId) {
+        // Usar el mismo formato que routeIncomingNI
+        const message = formatIncidentMessage({
+          ...draft,
+          folio: result.folio,
+          id: result.id,
+          originChatId: chat_id
+        });
+        
+        console.log('[WEBHOOK] Sending to groups:', { primaryId, ccIds, folio: result.folio });
+        
+        // Enviar a grupos (sin media por ahora)
+        await sendIncidentToGroups(client, { 
+          message, 
+          primaryId, 
+          ccIds, 
+          media: null 
+        });
+        
+        // Guardar evento de dispatch
+        incidenceDB.appendIncidentEvent(result.id, {
+          event_type: 'dispatched_to_groups',
+          wa_msg_id: null,
+          payload: {
+            primaryId,
+            ccIds: ccIds || [],
+            source: 'dashboard',
+            success: true
+          }
+        });
+        
+        console.log('[WEBHOOK] Incident dispatched to groups:', result.folio);
+      } else {
+        console.warn('[WEBHOOK] No primary group found for area:', areaUpper);
+      }
+    } catch (dispatchErr) {
+      console.error('[WEBHOOK] Error dispatching:', dispatchErr.message);
+      // Continuar aunque falle el dispatch
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // Notificar al solicitante
+    // ═══════════════════════════════════════════════════════════════
+    try {
+      const msg = `✅ *Incidencia Registrada*\n\n` +
+                  `📋 *Folio:* ${result.folio}\n` +
+                  `📍 *Ubicación:* ${lugar}\n` +
+                  `🏷️ *Área:* ${areaUpper}\n` +
+                  `📝 *Descripción:* ${descripcion}\n\n` +
+                  `Tu solicitud ha sido registrada y enviada al área correspondiente. ` +
+                  `Te mantendremos informado del progreso.`;
+      
+      await client.sendMessage(chat_id, msg);
+      console.log('[WEBHOOK] Requester notified:', chat_id);
+      
+    } catch (notifyErr) {
+      console.error('[WEBHOOK] Error notifying requester:', notifyErr.message);
+    }
+    
+    // El notifyDashboard ya se llama automáticamente desde persistIncident
+    
+    res.json({ 
+      ok: true, 
+      incidentId: result.id,
+      folio: result.folio,
+      message: 'Incidencia creada y despachada'
+    });
+    
+  } catch (e) {
+    console.error('[WEBHOOK] Create incident error:', e);
+    res.status(500).json({ error: 'internal_error', message: e.message });
+  }
+});
+
 process.on('SIGINT', () => gracefulExit(0));
 process.on('SIGTERM', () => gracefulExit(0));
 
