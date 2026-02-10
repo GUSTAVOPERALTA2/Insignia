@@ -235,15 +235,16 @@ function persistMediaToDisk(incidentId, media) {
   if (!media?.mimetype || !media?.data) return null;
   
   ensureDir(ATTACH_DIR);
-  const dir = path.join(ATTACH_DIR, incidentId);
-  ensureDir(dir);
+  // ✅ NO crear subdirectorio - guardar directamente en ATTACH_DIR
   
   try {
     const ext = mimeToExt(media.mimetype);
     const fname = media.filename 
       ? media.filename.replace(/[^\w.\-]+/g, '_') 
       : `${Date.now()}.${ext}`;
-    const fpath = path.join(dir, fname);
+    
+    // ✅ Guardar directamente en ATTACH_DIR sin subdirectorio
+    const fpath = path.join(ATTACH_DIR, fname);
     const buf = Buffer.from(media.data, 'base64');
     fs.writeFileSync(fpath, buf);
     
@@ -251,7 +252,7 @@ function persistMediaToDisk(incidentId, media) {
       id: `${incidentId}-evidence-${Date.now()}`,
       mimetype: media.mimetype,
       filename: fname,
-      url: `/attachments/${incidentId}/${encodeURIComponent(fname)}`,
+      url: `/attachments/${encodeURIComponent(fname)}`, // ✅ URL sin incidentId en path
       size: buf.length,
       by: 'team',
       kind: 'evidence_team',

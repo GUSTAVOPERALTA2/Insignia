@@ -68,8 +68,8 @@
     "cargo": "Supervisor Vespertino",
     "rol": "user",
     "team": "man",
-    "titulo": "Sr.",
-    "password": "9630"
+    "password": "9630",
+    "titulo": "Sr."
   },
   "5216241518830@c.us": {
     "nombre": "Eric Escobar",
@@ -238,5 +238,13 @@
     "team": "exp",
     "titulo": "Srtas.",
     "password": "2198"
+  },
+  "5219131082400@c.us": {
+    "nombre": "David Garcia",
+    "cargo": "Supervisor de Mantenimiento",
+    "rol": "user",
+    "team": "man",
+    "titulo": "Sr.",
+    "password": "2400"
   }
 }

@@ -11,6 +11,7 @@ const { randomUUID } = require('crypto');
 const DEBUG = (process.env.VICEBOT_DEBUG || '1') === '1';
 const DB_PATH = process.env.VICEBOT_DB_PATH || path.join(process.cwd(), 'data', 'vicebot.sqlite');
 const JSONL_PATH = process.env.VICEBOT_JSONL_FALLBACK || path.join(process.cwd(), 'data', 'incidents.jsonl');
+const ATTACH_DIR = process.env.VICEBOT_ATTACHMENTS_PATH || path.join(process.cwd(), 'data', 'attachments');
 
 // ✅ users.json (para resolver nombre + cargo SOLO en salidas del dashboard)
 const USERS_PATH =
@@ -496,12 +497,60 @@ function _getCurrentAttachmentsSQLite(incidentId) {
 
 function appendIncidentAttachment(incidentId, fileMeta, opts = {}) {
   const ts = nowISO();
+  
+  // Procesar y guardar archivo físicamente si viene data
+  let finalFilename = fileMeta.filename || `attachment_${Date.now()}`;
+  let actualSize = fileMeta.size || null;
+  
+  if (fileMeta.data) {
+    try {
+      // Asegurar que el directorio existe
+      if (!fs.existsSync(ATTACH_DIR)) {
+        fs.mkdirSync(ATTACH_DIR, { recursive: true });
+        if (DEBUG) console.log('[DB] Attachments directory created:', ATTACH_DIR);
+      }
+      
+      // Detectar extensión por mimetype si no la tiene
+      if (!path.extname(finalFilename) && fileMeta.mimetype) {
+        const extMap = {
+          'image/jpeg': '.jpg',
+          'image/jpg': '.jpg',
+          'image/png': '.png',
+          'image/gif': '.gif',
+          'image/webp': '.webp',
+          'application/pdf': '.pdf',
+          'video/mp4': '.mp4',
+          'video/quicktime': '.mov',
+          'audio/mpeg': '.mp3',
+          'audio/ogg': '.ogg'
+        };
+        
+        const ext = extMap[fileMeta.mimetype.toLowerCase()];
+        if (ext) {
+          finalFilename = finalFilename + ext;
+        }
+      }
+      
+      // Escribir archivo al disco
+      const filepath = path.join(ATTACH_DIR, finalFilename);
+      const buffer = Buffer.from(fileMeta.data, 'base64');
+      fs.writeFileSync(filepath, buffer);
+      actualSize = buffer.length;
+      
+      if (DEBUG) console.log(`[DB] attachment.saved { file: '${finalFilename}', size: ${actualSize} bytes }`);
+      
+    } catch (err) {
+      console.error('[DB] Error saving attachment file:', err.message);
+      // Continuar guardando metadata aunque falle el guardado físico
+    }
+  }
+  
   const meta = {
     id: fileMeta.id || randomUUID(),
-    filename: fileMeta.filename || null,
+    filename: finalFilename,
     mimetype: fileMeta.mimetype || 'application/octet-stream',
-    url: fileMeta.url || null,
-    size: fileMeta.size || null,
+    url: fileMeta.url || `/attachments/${finalFilename}`,
+    size: actualSize,
     created_at: ts,
   };
 

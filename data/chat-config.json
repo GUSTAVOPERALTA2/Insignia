@@ -1,0 +1,38 @@
+{
+  "120363420943596182@g.us": {
+    "area": "AMA",
+    "enabled": true,
+    "notes": "",
+    "updatedAt": "2026-02-09T20:48:58.277Z"
+  },
+  "120363402052139161@g.us": {
+    "area": "IT",
+    "enabled": true,
+    "notes": "",
+    "updatedAt": "2026-02-06T03:22:34.506Z"
+  },
+  "120363402754499641@g.us": {
+    "area": "SEG",
+    "enabled": true,
+    "notes": "",
+    "updatedAt": "2026-02-06T03:22:34.506Z"
+  },
+  "120363419275864676@g.us": {
+    "area": "RS",
+    "enabled": true,
+    "notes": "",
+    "updatedAt": "2026-02-06T03:22:34.506Z"
+  },
+  "120363420744457089@g.us": {
+    "area": "MAN",
+    "enabled": true,
+    "notes": "",
+    "updatedAt": "2026-02-06T03:22:34.506Z"
+  },
+  "5216242672198@c.us": {
+    "area": "EXP",
+    "enabled": true,
+    "notes": "",
+    "updatedAt": "2026-02-06T03:24:01.835Z"
+  }
+}

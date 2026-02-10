@@ -241,6 +241,9 @@ let client = null;
 let shuttingDown = false;
 let restarting = false;
 
+let currentQR = null;  // Variable para guardar QR
+let botInfo = null;    // Variable para info del bot
+
 let WA_CONNECTED = false;
 let WA_READY = false;
 
@@ -391,6 +394,17 @@ function createWaClient() {
     console.log('[LOAD] Escanea el QR (si ya tienes sesión, no aparecerá)…');
     qrcode.generate(qr, { small: true });
 
+    // Convertir QR a data URL para el dashboard
+    const QRCode = require('qrcode');
+    QRCode.toDataURL(qr, (err, url) => {
+      if (err) {
+        console.error('[WA] Error generando QR para dashboard:', err);
+      } else {
+        currentQR = url;
+        console.log('[WA] ✅ QR Code generado para dashboard');
+      }
+    });
+
     if (WA_DIAG) {
       console.log('[WA][DIAG] QR emitted at', new Date().toISOString());
       logListenerCounts(c);
@@ -399,6 +413,7 @@ function createWaClient() {
 
   c.on('authenticated', () => {
     WA_CONNECTED = true;
+    currentQR = null;  // Limpiar QR cuando se autentica
     console.log('🔐 SESIÓN INICIADA (authenticated)');
 
     if (WA_DIAG) {
@@ -411,9 +426,111 @@ function createWaClient() {
     console.error('❌ AUTH FAILURE:', msg);
   });
 
-  c.on('ready', () => {
+  c.on('ready', async () => {
     WA_CONNECTED = true;
     WA_READY = true;
+    currentQR = null;  // Limpiar QR cuando está listo
+
+    // Obtener info del bot
+    try {
+      botInfo = await c.info;
+      
+      // Intentar obtener batería de múltiples formas
+      let batteryObtained = false;
+      
+      // Método 1: Desde window.Store.Conn
+      if (!batteryObtained && c.pupPage) {
+        try {
+          const result = await c.pupPage.evaluate(() => {
+            if (window.Store && window.Store.Conn) {
+              return {
+                battery: window.Store.Conn.battery,
+                plugged: window.Store.Conn.plugged
+              };
+            }
+            return null;
+          });
+          
+          if (result && result.battery !== undefined && result.battery !== null) {
+            botInfo.battery = result.battery;
+            botInfo.plugged = result.plugged;
+            batteryObtained = true;
+            console.log('[WA] Batería obtenida (método 1):', result);
+          }
+        } catch (err) {
+          console.log('[WA] Método 1 falló:', err.message);
+        }
+      }
+      
+      // Método 2: Desde WWebJS.battery (versiones nuevas)
+      if (!batteryObtained && c.pupPage) {
+        try {
+          const result = await c.pupPage.evaluate(() => {
+            if (window.WWebJS && window.WWebJS.battery) {
+              return window.WWebJS.battery;
+            }
+            return null;
+          });
+          
+          if (result && result.battery !== undefined) {
+            botInfo.battery = result.battery;
+            botInfo.plugged = result.plugged || false;
+            batteryObtained = true;
+            console.log('[WA] Batería obtenida (método 2):', result);
+          }
+        } catch (err) {
+          console.log('[WA] Método 2 falló:', err.message);
+        }
+      }
+      
+      // Método 3: Buscar en todos los stores posibles
+      if (!batteryObtained && c.pupPage) {
+        try {
+          const result = await c.pupPage.evaluate(() => {
+            // Buscar en todos los stores posibles
+            const stores = [
+              window.Store?.Conn,
+              window.Store?.State,
+              window.WWebJS?.battery,
+              window.WAWebBatteryManager
+            ];
+            
+            for (const store of stores) {
+              if (store && (store.battery !== undefined || store.batteryLevel !== undefined)) {
+                return {
+                  battery: store.battery || store.batteryLevel,
+                  plugged: store.plugged || store.isPlugged || false
+                };
+              }
+            }
+            
+            return null;
+          });
+          
+          if (result && result.battery !== undefined && result.battery !== null) {
+            botInfo.battery = result.battery;
+            botInfo.plugged = result.plugged;
+            batteryObtained = true;
+            console.log('[WA] Batería obtenida (método 3):', result);
+          }
+        } catch (err) {
+          console.log('[WA] Método 3 falló:', err.message);
+        }
+      }
+      
+      if (!batteryObtained) {
+        console.log('[WA] ⚠️ No se pudo obtener batería con ningún método');
+      }
+      
+      console.log('[WA] Bot info obtenida:', { 
+        wid: botInfo?.wid?.user, 
+        pushname: botInfo?.pushname,
+        battery: botInfo?.battery,
+        plugged: botInfo?.plugged
+      });
+    } catch (e) {
+      console.warn('[WA] No se pudo obtener bot info:', e.message);
+    }
 
     if (!seenReady) {
       seenReady = true;
@@ -568,7 +685,9 @@ function scheduleRestart(reason) {
  * 8) HTTP Server (mínimo, sin dashboard)
  * ────────────────────────────────────────────────────────────── */
 const app = express();
-app.use(express.json());
+// Aumentar límite para soportar imágenes desde dashboard (hasta 50MB)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Servir attachments
 const ATTACH_ROOT = process.env.VICEBOT_ATTACH_ROOT || path.join(process.cwd(), 'data', 'attachments');
@@ -583,6 +702,8 @@ app.get('/api/wa-status', (_req, res) => {
   res.json({
     connected: WA_CONNECTED,
     ready: WA_READY,
+    qr: currentQR,           // QR code como data URL
+    info: botInfo,           // Info del bot (wid, pushname, battery)
     restarting,
     healthCheck: {
       failures: healthCheckFailures,
@@ -591,6 +712,195 @@ app.get('/api/wa-status', (_req, res) => {
     },
     restartAttempt,
   });
+});
+
+// POST /api/wa-logout - Cerrar sesión del bot
+app.post('/api/wa-logout', async (_req, res) => {
+  try {
+    if (!client) {
+      return res.json({ success: false, message: 'Client not initialized' });
+    }
+    
+    console.log('[WA] Logout solicitado via API');
+    
+    // Limpiar variables
+    WA_CONNECTED = false;
+    WA_READY = false;
+    currentQR = null;
+    botInfo = null;
+    
+    // Responder antes del logout
+    res.json({ success: true, message: 'Logged out successfully. Bot will reinitialize.' });
+    
+    // Hacer logout de forma asíncrona
+    setTimeout(async () => {
+      try {
+        await client.logout();
+        console.log('[WA] Logout completado, programando reinicio...');
+        
+        // Forzar reinicio para generar nuevo QR
+        scheduleRestart('LOGOUT');
+      } catch (error) {
+        console.error('[WA] Logout error:', error);
+        // Intentar reinicio aunque falle el logout
+        scheduleRestart('LOGOUT_ERROR');
+      }
+    }, 100);
+    
+  } catch (error) {
+    console.error('[WA] Logout error:', error);
+    res.json({ success: false, message: error.message });
+  }
+});
+
+const CHAT_CONFIG_PATH = path.join(process.cwd(), 'data', 'chat-config.json');
+
+// Helper para cargar configuración de chats
+function loadChatConfig() {
+  try {
+    if (fs.existsSync(CHAT_CONFIG_PATH)) {
+      const raw = fs.readFileSync(CHAT_CONFIG_PATH, 'utf8');
+      return JSON.parse(raw);
+    }
+  } catch (e) {
+    console.warn('[CHAT-CONFIG] Error loading:', e.message);
+  }
+  return {};
+}
+
+// Helper para guardar configuración de chats
+function saveChatConfig(config) {
+  try {
+    fs.writeFileSync(CHAT_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
+    return true;
+  } catch (e) {
+    console.error('[CHAT-CONFIG] Error saving:', e.message);
+    return false;
+  }
+}
+
+// GET /api/chats - Listar todos los chats con su configuración
+app.get('/api/chats', async (_req, res) => {
+  try {
+    if (!client || !WA_READY) {
+      return res.status(503).json({ error: 'bot_not_ready' });
+    }
+    
+    // Obtener todos los chats
+    const chats = await client.getChats();
+    const config = loadChatConfig();
+    
+    // Formatear chats con configuración
+    const formatted = chats.map(chat => {
+      const chatConfig = config[chat.id._serialized] || {};
+      
+      return {
+        id: chat.id._serialized,
+        name: chat.name || chat.id.user,
+        isGroup: chat.isGroup,
+        participants: chat.isGroup ? chat.participants?.length || 0 : 1,
+        area: chatConfig.area || null,
+        enabled: chatConfig.enabled !== false, // Por defecto true
+        notes: chatConfig.notes || '',
+        lastMessage: chat.lastMessage?.timestamp || null,
+      };
+    });
+    
+    // Ordenar: grupos primero, luego alfabéticamente
+    formatted.sort((a, b) => {
+      if (a.isGroup !== b.isGroup) return a.isGroup ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    
+    console.log(`[CHAT-LIST] Returning ${formatted.length} chats`);
+    
+    res.json({ 
+      ok: true, 
+      chats: formatted,
+      total: formatted.length 
+    });
+    
+  } catch (e) {
+    console.error('[CHAT-LIST] Error:', e.message);
+    res.status(500).json({ error: 'internal_error', message: e.message });
+  }
+});
+
+// GET /api/chat-config - Obtener configuración de chats
+app.get('/api/chat-config', (_req, res) => {
+  try {
+    const config = loadChatConfig();
+    res.json({ ok: true, config });
+  } catch (e) {
+    console.error('[CHAT-CONFIG] Error:', e.message);
+    res.status(500).json({ error: 'internal_error', message: e.message });
+  }
+});
+
+// POST /api/chat-config - Guardar configuración de un chat
+app.post('/api/chat-config', (req, res) => {
+  try {
+    const { chatId, area, enabled, notes } = req.body;
+    
+    if (!chatId) {
+      return res.status(400).json({ error: 'missing_chat_id' });
+    }
+    
+    const config = loadChatConfig();
+    
+    config[chatId] = {
+      area: area || null,
+      enabled: enabled !== false,
+      notes: notes || '',
+      updatedAt: new Date().toISOString()
+    };
+    
+    if (saveChatConfig(config)) {
+      res.json({ ok: true, chatId, config: config[chatId] });
+    } else {
+      res.status(500).json({ error: 'save_failed' });
+    }
+    
+  } catch (e) {
+    console.error('[CHAT-CONFIG] Save error:', e.message);
+    res.status(500).json({ error: 'internal_error', message: e.message });
+  }
+});
+
+// POST /api/chat-config/bulk - Guardar configuración de múltiples chats
+app.post('/api/chat-config/bulk', (req, res) => {
+  try {
+    const { updates } = req.body;
+    
+    if (!Array.isArray(updates)) {
+      return res.status(400).json({ error: 'updates_must_be_array' });
+    }
+    
+    const config = loadChatConfig();
+    const timestamp = new Date().toISOString();
+    
+    for (const update of updates) {
+      const { chatId, area, enabled, notes } = update;
+      if (!chatId) continue;
+      
+      config[chatId] = {
+        area: area || null,
+        enabled: enabled !== false,
+        notes: notes || '',
+        updatedAt: timestamp
+      };
+    }
+    
+    if (saveChatConfig(config)) {
+      res.json({ ok: true, updated: updates.length });
+    } else {
+      res.status(500).json({ error: 'save_failed' });
+    }
+    
+  } catch (e) {
+    console.error('[CHAT-CONFIG] Bulk save error:', e.message);
+    res.status(500).json({ error: 'internal_error', message: e.message });
+  }
 });
 
 // Endpoint interno para que módulos notifiquen cambios al dashboard
@@ -653,13 +963,21 @@ app.post('/api/webhook/status-change', async (req, res) => {
       { area_destino: incident.area_destino, areas: areasJson },
       cfg
     );
+    // Helper para descripción corta (primeras 10 palabras)
+    const getShortDesc = (desc) => {
+      if (!desc) return '';
+      const words = desc.trim().split(/\s+/).slice(0, 10);
+      const short = words.join(' ');
+      return short + (desc.split(/\s+/).length > 10 ? '...' : '');
+    };
+    const shortDesc = getShortDesc(incident.descripcion || incident.description || '');
     
-    // Mapeo de estados a mensajes para grupos
+    // Mapeo de estados a mensajes para grupos (formato mejorado)
     const groupMessages = {
-      'in_progress': `🔧 *${incFolio}* — El ticket fue tomado desde el panel de control.`,
-      'done': `✅ *${incFolio}* — Completado.`,
-      'canceled': `❌ *${incFolio}* — Ticket cancelado desde el panel de control.`,
-      'open': `🔄 *${incFolio}* — Ticket reabierto desde el panel de control.`,
+      'in_progress': `🆔 *${incFolio}* — ${shortDesc}\n\n🔧 En progreso desde Dashboard`,
+      'done': `🆔 *${incFolio}* — ${shortDesc}\n\n✅ Completado desde Dashboard`,
+      'canceled': `🆔 *${incFolio}* — ${shortDesc}\n\n❌ Cancelado desde Dashboard`,
+      'open': `🆔 *${incFolio}* — ${shortDesc}\n\n🔄 Reabierto desde Dashboard`,
     };
     
     const groupMsg = groupMessages[to];

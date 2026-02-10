@@ -50,6 +50,7 @@ async function sendDM({ client, incident, kind, data = {}, media = [] }) {
   }
 
   if (DEBUG) console.log(`[DM] Sending ${kind} to ${to} for folio ${inc.folio}`);
+  if (DEBUG) console.log(`[DM] Description: "${inc.description?.substring(0, 50)}..."`);
 
   // Rate limit básico (1 DM / 60s por tipo)
   const winSec = parseInt(process.env.VICEBOT_DM_RATE_WINDOW_SEC || '60', 10);
@@ -60,18 +61,68 @@ async function sendDM({ client, incident, kind, data = {}, media = [] }) {
 
   // Render template
   const folio = inc.folio || inc.human_id || inc.id;
+  const description = inc.descripcion || inc.description || '';  // descripcion (español) o description (inglés)
+  
   let text;
   switch (kind) {
-    case 'ack_start':       text = tpl.ackStart({ folio, area: inc.area_destino || data.area }); break;
-    case 'question':        text = tpl.question({ folio, question: data.question }); break;
-    case 'eta':             text = tpl.eta({ folio, etaText: data.etaText }); break;
-    case 'blocked':         text = tpl.blocked({ folio, reason: data.reason }); break;
-    case 'reroute':         text = tpl.reroute({ folio, newArea: data.newArea }); break;
-    case 'evidence':        text = tpl.evidence({ folio, note: data.note || '' }); break;
-    case 'done_claim':      text = tpl.doneClaim({ folio }); break;
-    case 'closed':          text = tpl.closed({ folio }); break;
-    case 'reopened':        text = tpl.reopened({ folio }); break;
-    default:                text = `ℹ️ ${folio}: actualización del ticket.`; break;
+    // Templates existentes (actuales)
+    case 'ack_start':
+      text = tpl.ackStart({ folio, area: inc.area_destino || data.area });
+      break;
+      
+    case 'question':
+      text = tpl.question({ folio, question: data.question });
+      break;
+      
+    case 'eta':
+      text = tpl.eta({ folio, etaText: data.etaText });
+      break;
+      
+    case 'blocked':
+      text = tpl.blocked({ folio, reason: data.reason });
+      break;
+      
+    case 'reroute':
+      text = tpl.reroute({ folio, newArea: data.newArea });
+      break;
+      
+    case 'evidence':
+      text = tpl.evidence({ folio, note: data.note || '' });
+      break;
+      
+    case 'done_claim':
+      text = tpl.doneClaim({ folio });
+      break;
+      
+    case 'closed':
+      text = tpl.closed({ folio });
+      break;
+      
+    case 'reopened':
+      text = tpl.reopened({ folio });
+      break;
+    
+    // ── NUEVOS: Estados desde Dashboard ──
+    case 'done':
+      text = tpl.done({ folio, description });
+      break;
+      
+    case 'in_progress':
+      text = tpl.inProgress({ folio, description });
+      break;
+      
+    case 'canceled':
+      text = tpl.canceled({ folio, description });
+      break;
+      
+    case 'open':
+      text = tpl.open({ folio, description });
+      break;
+    
+    default:
+      // Fallback genérico
+      text = `ℹ️ ${folio}: actualización del ticket.`;
+      break;
   }
 
   // Enviar mensaje principal usando safeSendMessage (mismo método que grupos)
