@@ -1044,51 +1044,28 @@ app.post('/api/webhook/status-change', async (req, res) => {
  * Guarda el comentario en la BD y lo envía por WhatsApp
  * ────────────────────────────────────────────────────────────── */
 app.post('/api/webhook/comment', async (req, res) => {
-  const { incidentId, folio, chat_id, area_destino, text, source } = req.body || {};
+  const { incidentId, folio, chat_id, area_destino, text, author_name, source } = req.body || {};  // ← Agregar author_name
   
   if (!incidentId || !text) {
     return res.status(400).json({ error: 'missing_fields', required: ['incidentId', 'text'] });
   }
-  
-  // Solo procesar si viene del dashboard
+
   if (source !== 'dashboard') {
     return res.json({ ok: true, skipped: true, reason: 'not_from_dashboard' });
   }
   
-  console.log(`[WEBHOOK] Comment from dashboard: ${folio || incidentId}`);
+  console.log(`[WEBHOOK] Comment from dashboard: ${folio || incidentId} by ${author_name || 'Unknown'}`);
+  
   
   try {
-    const results = { groups: null, requester: null, saved: false };
+    const results = { groups: null, requester: null };
     const incFolio = folio || `INC-${incidentId.slice(0, 6)}`;
-
-    // ✅ FIX: definir commentMsg (antes se usaba sin existir)
-    const commentMsg = `💬 *${incFolio}* — Comentario desde panel:\n\n${text}`;
-    
-    // ─────────────────────────────────────────────────────────────
-    // 1. GUARDAR el comentario en la BD (como EVENTO estándar)
-    // ─────────────────────────────────────────────────────────────
-    try {
-      // appendIncidentEvent NO es async en tu DB; no hace falta await
-      incidenceDB.appendIncidentEvent(incidentId, {
-        event_type: 'comment_text',
-        wa_msg_id: null,
-        payload: {
-          text,
-          by: 'dashboard',
-          source: 'dashboard'
-        }
-      });
-
-      results.saved = true;
-      if (DEBUG) console.log(`[WEBHOOK] Comment saved to DB for ${incFolio}`);
-    } catch (dbErr) {
-      console.error(`[WEBHOOK] Failed to save comment to DB:`, dbErr?.message || dbErr);
-      // Continuamos para intentar enviar por WhatsApp aunque falle el guardado
-    }
-
+        // ✅ Mensaje con nombre de usuario
+    const userName = author_name || 'Panel';
+    const commentMsg = `💬 *${incFolio}* — Comentario de *${userName}* desde el panel:\n\n${text}`;
     // ✅ (opcional, pero conservador): si WA no está listo, no intentes enviar
     if (!WA_CONNECTED || !WA_READY || !client) {
-      console.warn('[WEBHOOK] WhatsApp not connected, comment saved but not sent');
+      console.warn('[WEBHOOK] WhatsApp not connected, comment NOT sent (already saved in dashboard)');
       return res.json({ 
         ok: true, 
         incidentId, 
@@ -1139,7 +1116,6 @@ app.post('/api/webhook/comment', async (req, res) => {
     res.status(500).json({ error: 'internal_error', message: e?.message });
   }
 });
-
 // Exportar función para uso directo desde módulos
 // Los módulos pueden hacer: require('../index').notifyDashboard({...})
 // O usar el endpoint HTTP interno
